@@ -30,7 +30,7 @@ input,textarea,button,select{font-family:inherit}
   .main{padding:32px 40px 60px}.home-grid{display:grid;grid-template-columns:380px 1fr;gap:28px;align-items:start}
   .content-wrap{max-width:760px;margin:0 auto}.photo-grid{grid-template-columns:repeat(4,1fr)}
 }
-@media(max-width:767px){.home-grid{display:flex;flex-direction:column;gap:24px}.content-wrap{width:100%}}
+@media(max-width:767px){.home-grid{display:flex;flex-direction:column;gap:24px}.content-wrap{width:100%}input[type=date],input[type=month]{font-size:14px;-webkit-appearance:none;appearance:none;}}
 </style>
 </head>
 <body>
@@ -61,6 +61,9 @@ if (CONFIGURED) {
     db = firebase.firestore();
   } catch(e) { console.warn('Firebase 초기화 실패:', e); }
 }
+
+/* ── Kakao Local Search 설정 ─────────────────────────────────── */
+const KAKAO_KEY = 'f89d3cb33646b4ff8cae87322dfff492';
 
 /* ── Cloudinary 설정 ─────────────────────────────────────────── */
 const CLOUDINARY_CLOUD = 'r9jlchwx';
@@ -145,7 +148,14 @@ function getNextClassDate(){const now=new Date();const[y,m]=[now.getFullYear(),n
 const fDate=d=>d?`${d.getFullYear()}년 ${d.getMonth()+1}월 ${d.getDate()}일 (${WD[d.getDay()]})`:'';
 const toYM=d=>d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`:'';
 const ymLabel=ym=>{if(!ym)return'';const[y,m]=ym.split('-');return`${y}년 ${+m}월`;};
+const displayDate=d=>{
+  if(!d)return'';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(d)){const dt=new Date(d+'T00:00:00');return`${dt.getFullYear()}년 ${dt.getMonth()+1}월 ${dt.getDate()}일 (${WD[dt.getDay()]})`;}
+  return d;
+};
 const daysUntil=d=>{const a=new Date();a.setHours(0,0,0,0);const b=new Date(d);b.setHours(0,0,0,0);return Math.round((b-a)/86400000);};
+
+const toISO=d=>{if(!d)return'';return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
 
 /* ── 뒷풀이 정규화 (구버전 호환) ─────────────────────────────── */
 function getAfterParties(rec){
@@ -173,6 +183,73 @@ function Empty({emoji,title,sub}){return <div style={{textAlign:'center',padding
 function ScoreBadge({score}){const c=score>0?'#6c5ce7':score<0?'#EF4444':'#94A3B8';const bg=score>0?'#F0EDFF':score<0?'#FEF2F2':'#F1F5F9';return <span style={{fontWeight:800,fontSize:12,color:c,background:bg,borderRadius:20,padding:'3px 10px'}}>{score>0?'+':''}{score}점</span>;}
 function VoteBreakdown({votes}){const cnt={};Object.values(votes||{}).forEach(v=>{cnt[v]=(cnt[v]||0)+1;});const items=VOPTS.filter(o=>cnt[o.k]);if(!items.length)return null;return <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>{items.map(o=><span key={o.k} style={{fontSize:11,background:o.bg,color:o.color,borderRadius:20,padding:'2px 8px',border:`1px solid ${o.border}`,fontWeight:700}}>{o.e} {cnt[o.k]}</span>)}</div>;}
 function InfoRow({icon,label,val}){return <div style={{display:'flex',gap:8,alignItems:'flex-start'}}><span style={{fontSize:16,flexShrink:0}}>{icon}</span><div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:1}}>{label}</div><div style={{fontSize:14,color:'#374151',lineHeight:1.5}}>{val}</div></div></div>;}
+
+/* ── PlaceSearch (카카오 장소 검색) ─────────────────────────── */
+function PlaceSearch({onSelect}){
+  const [q,setQ]=useState('');
+  const [results,setResults]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const [open,setOpen]=useState(false);
+  const ref=useRef();
+
+  useEffect(()=>{
+    function onClickOut(e){if(ref.current&&!ref.current.contains(e.target))setOpen(false);}
+    document.addEventListener('mousedown',onClickOut);
+    return()=>document.removeEventListener('mousedown',onClickOut);
+  },[]);
+
+  useEffect(()=>{
+    if(!q.trim()||q.length<1){setResults([]);setOpen(false);return;}
+    const t=setTimeout(async()=>{
+      if(KAKAO_KEY==='여기에_REST_API_키_붙여넣기'){alert('카카오 REST API 키를 설정해주세요');return;}
+      setLoading(true);
+      try{
+        const res=await fetch(`https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(q)}&size=7`,
+          {headers:{Authorization:`KakaoAK ${KAKAO_KEY}`}});
+        const data=await res.json();
+        setResults(data.documents||[]);
+        setOpen(true);
+      }catch(e){console.error(e);}
+      setLoading(false);
+    },350);
+    return()=>clearTimeout(t);
+  },[q]);
+
+  function select(r){
+    onSelect({
+      name: r.place_name,
+      address: r.road_address_name||r.address_name,
+      naverUrl: `https://map.naver.com/v5/search/${encodeURIComponent(r.place_name+' '+(r.road_address_name||r.address_name).split(' ').slice(0,3).join(' '))}`,
+    });
+    setQ('');setResults([]);setOpen(false);
+  }
+
+  return(
+    <div ref={ref} style={{position:'relative'}}>
+      <div style={{position:'relative'}}>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="🔍 장소명 검색 (예: 홍대 도예공방)" style={{...IS,paddingRight:36}}/>
+        {loading&&<span style={{position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',fontSize:13,color:'#bbb'}}>⏳</span>}
+      </div>
+      {open&&results.length>0&&(
+        <div style={{position:'absolute',top:'calc(100% + 4px)',left:0,right:0,background:'#fff',border:'1.5px solid #E2D9FF',borderRadius:12,zIndex:200,maxHeight:280,overflowY:'auto',boxShadow:'0 8px 24px rgba(108,92,231,.12)'}}>
+          {results.map((r,i)=>(
+            <button key={i} onClick={()=>select(r)}
+              style={{width:'100%',padding:'10px 14px',background:'none',border:'none',borderBottom:i<results.length-1?'1px solid #F0EDFF':'none',cursor:'pointer',textAlign:'left',fontFamily:'inherit'}}>
+              <div style={{fontWeight:700,fontSize:14,color:'#1a1a2e',marginBottom:2}}>{r.place_name}</div>
+              <div style={{fontSize:12,color:'#64748B',marginBottom:1}}>{r.road_address_name||r.address_name}</div>
+              <div style={{fontSize:11,color:'#a0aec0'}}>{r.category_name?.split(' > ').slice(-1)[0]||''}</div>
+            </button>
+          ))}
+        </div>
+      )}
+      {open&&results.length===0&&!loading&&q.length>0&&(
+        <div style={{position:'absolute',top:'calc(100% + 4px)',left:0,right:0,background:'#fff',border:'1.5px solid #E2D9FF',borderRadius:12,zIndex:200,padding:'12px 14px',fontSize:13,color:'#bbb',boxShadow:'0 8px 24px rgba(0,0,0,.08)'}}>
+          검색 결과가 없어요
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ── PhotoUploadBtn ──────────────────────────────────────────── */
 function PhotoUploadBtn({onUpload,uploading,label='📷 사진 추가'}){
@@ -232,7 +309,7 @@ function CandidateCard({cand,onClick,myVote,rank}){
 }
 
 /* ── CandidateDetail ─────────────────────────────────────────── */
-function CandidateDetail({cand,onUpdate,nick,onBack,inModal,onDelete}){
+function CandidateDetail({cand,onUpdate,nick,onBack,inModal}){
   const myVote=cand.votes?.[nick]||null;
   const score=calcScore(cand);
   const totalVoters=Object.keys(cand.votes||{}).length;
@@ -242,6 +319,7 @@ function CandidateDetail({cand,onUpdate,nick,onBack,inModal,onDelete}){
     onUpdate({...cand,votes:{...(cand.votes||{}),[nick.trim()]:key}});
   }
   return(
+    <>
     <div>
       {!inModal&&<BackBtn onClick={onBack}/>}
       <div style={{...CS,marginBottom:14}}>
@@ -251,7 +329,7 @@ function CandidateDetail({cand,onUpdate,nick,onBack,inModal,onDelete}){
             <h2 style={{fontWeight:900,fontSize:20,color:'#1a1a2e',margin:0,lineHeight:1.3}}>{cand.name}</h2>
           <div style={{display:'flex',gap:6,marginTop:10}}>
             <Btn v="ghost" sx={{padding:'5px 12px',fontSize:12}} onClick={()=>setShowEdit(true)}>✏️ 수정</Btn>
-            {onDelete&&<Btn v="red" sx={{padding:'5px 12px',fontSize:12}} onClick={()=>{if(confirm('이 후보를 삭제할까요?'))onDelete();}}>🗑️ 삭제</Btn>}
+            
           </div>
           </div>
           <div style={{textAlign:'center',background:score>0?'#F0EDFF':score<0?'#FEF2F2':'#F1F5F9',borderRadius:14,padding:'10px 14px',minWidth:64,flexShrink:0}}>
@@ -288,6 +366,7 @@ function CandidateDetail({cand,onUpdate,nick,onBack,inModal,onDelete}){
       </div>
     </div>
     {showEdit&&<EditCandidateModal cand={cand} onSave={u=>{onUpdate(u);setShowEdit(false);}} onClose={()=>setShowEdit(false)}/>}
+    </>
   );
 }
 
@@ -306,7 +385,7 @@ function RecordCard({rec,onClick}){
         {isStub&&<span style={{fontSize:11,background:'#FEF3C7',color:'#D97706',borderRadius:20,padding:'2px 9px',fontWeight:700}}>✏️ 작성 중</span>}
       </div>
       <div style={{fontWeight:800,fontSize:16,color:'#1a1a2e',marginBottom:6}}>{rec.name}</div>
-      {rec.date&&<div style={{fontSize:12,color:'#94A3B8',marginBottom:6}}>📅 {rec.date}</div>}
+      {rec.date&&<div style={{fontSize:12,color:'#94A3B8',marginBottom:6}}>📅 {displayDate(rec.date)}</div>}
       {isStub
         ?<div style={{fontSize:13,color:'#D97706'}}>클래스 후 활동내용·사진·리뷰를 여기에 남겨주세요 →</div>
         :<div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
@@ -321,8 +400,10 @@ function RecordCard({rec,onClick}){
 }
 
 /* ── RecordDetail ────────────────────────────────────────────── */
-function RecordDetail({rec,onUpdate,nick,onBack,onDelete}){
+function RecordDetail({rec,onUpdate,nick,onBack}){
   const [showEdit,setShowEdit]=useState(false);
+  const [showAddParty,setShowAddParty]=useState(false);
+  const [newParty,setNewParty]=useState({name:'',address:'',url:''});
   const [uploadingPhoto,setUploadingPhoto]=useState(false);
   const [showImpForm,setShowImpForm]=useState(false);
   const [impForm,setImpForm]=useState({nick:nick||'',text:''});
@@ -337,6 +418,11 @@ function RecordDetail({rec,onUpdate,nick,onBack,onDelete}){
   const avg=reviews.length?(reviews.reduce((s,r)=>s+r.rating,0)/reviews.length).toFixed(1):null;
 
   function update(changes){onUpdate({...rec,...changes});}
+  function addAfterParty(){
+    if(!newParty.name.trim()&&!newParty.address.trim())return;
+    update({afterParties:[...afterParties,{...newParty,id:uid()}]});
+    setNewParty({name:'',address:'',url:''});setShowAddParty(false);
+  }
 
   // 활동 사진 업로드
   async function handlePhotoUpload(file){
@@ -388,6 +474,7 @@ function RecordDetail({rec,onUpdate,nick,onBack,onDelete}){
   );
 
   return(
+    <>
     <div>
       <BackBtn onClick={onBack}/>
 
@@ -402,11 +489,11 @@ function RecordDetail({rec,onUpdate,nick,onBack,onDelete}){
           <h2 style={{fontWeight:900,fontSize:20,color:'#1a1a2e',margin:0}}>{rec.name}</h2>
           <div style={{display:'flex',gap:6}}>
             <Btn v="ghost" sx={{padding:'5px 12px',fontSize:12}} onClick={()=>setShowEdit(true)}>✏️ 수정</Btn>
-            {onDelete&&<Btn v="red" sx={{padding:'5px 12px',fontSize:12}} onClick={()=>{if(confirm('이 기록을 삭제할까요?'))onDelete();}}>🗑️ 삭제</Btn>}
+            
           </div>
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
-          {rec.date&&<InfoRow icon="📅" label="날짜" val={rec.date}/>}
+          {rec.date&&<InfoRow icon="📅" label="날짜" val={displayDate(rec.date)}/>}
           {rec.activity&&<InfoRow icon="📝" label="활동 내용" val={rec.activity}/>}
           {rec.price>0&&<InfoRow icon="💰" label="금액 (1인)" val={`${Number(rec.price).toLocaleString()}원`}/>}
           {rec.address&&(
@@ -430,18 +517,32 @@ function RecordDetail({rec,onUpdate,nick,onBack,onDelete}){
       </div>
 
       {/* 뒷풀이 장소 */}
-      {afterParties.length>0&&(
-        <div style={{marginBottom:14}}>
-          {afterParties.map((p,i)=>(
-            <div key={p.id||i} style={{background:'#FFFBEB',border:'1.5px solid #FDE68A',borderRadius:16,padding:'14px 16px',marginBottom:10}}>
-              <div style={{fontWeight:800,fontSize:13,color:'#92400E',marginBottom:8}}>🍻 {i+1}차 뒷풀이</div>
-              {p.name&&<div style={{fontWeight:700,fontSize:15,color:'#374151',marginBottom:4}}>{p.name}</div>}
-              {p.address&&<div style={{fontSize:13,color:'#64748B',marginBottom:4}}>📍 {p.address}</div>}
-              {p.url&&<a href={p.url} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:13,color:'#03C75A',fontWeight:700,textDecoration:'none'}}>🗺️ 네이버 지도</a>}
+      <div style={{marginBottom:14}}>
+        {afterParties.map((p,i)=>(
+          <div key={p.id||i} style={{background:'#FFFBEB',border:'1.5px solid #FDE68A',borderRadius:16,padding:'14px 16px',marginBottom:10}}>
+            <div style={{fontWeight:800,fontSize:13,color:'#92400E',marginBottom:8}}>🍻 {i+1}차 뒷풀이</div>
+            {p.name&&<div style={{fontWeight:700,fontSize:15,color:'#374151',marginBottom:4}}>{p.name}</div>}
+            {p.address&&<div style={{fontSize:13,color:'#64748B',marginBottom:4}}>📍 {p.address}</div>}
+            {p.url&&<a href={p.url} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:13,color:'#03C75A',fontWeight:700,textDecoration:'none'}}>🗺️ 네이버 지도</a>}
+          </div>
+        ))}
+        {showAddParty?(
+          <div style={{background:'#FFFBEB',border:'1.5px solid #FDE68A',borderRadius:16,padding:'14px 16px'}}>
+            <div style={{fontWeight:800,fontSize:13,color:'#92400E',marginBottom:10}}>🍻 {afterParties.length+1}차 뒷풀이</div>
+            <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:10}}>
+              <FI placeholder="장소 이름" value={newParty.name} onChange={e=>setNewParty(p=>({...p,name:e.target.value}))}/>
+              <FI placeholder="주소" value={newParty.address} onChange={e=>setNewParty(p=>({...p,address:e.target.value}))}/>
+              <FI placeholder="🗺️ 네이버 지도 링크" value={newParty.url} onChange={e=>setNewParty(p=>({...p,url:e.target.value}))}/>
             </div>
-          ))}
-        </div>
-      )}
+            <div style={{display:'flex',gap:8}}>
+              <Btn sx={{flex:1,justifyContent:'center'}} onClick={addAfterParty}>추가</Btn>
+              <Btn v="gray" onClick={()=>{setShowAddParty(false);setNewParty({name:'',address:'',url:''});}}>취소</Btn>
+            </div>
+          </div>
+        ):(
+          <Btn v="amber" sx={{width:'100%',justifyContent:'center'}} onClick={()=>setShowAddParty(true)}>🍻 뒷풀이 장소 추가</Btn>
+        )}
+      </div>
 
       {/* 활동 소감 */}
       <div style={{...CS,marginBottom:14}}>
@@ -505,6 +606,7 @@ function RecordDetail({rec,onUpdate,nick,onBack,onDelete}){
       </div>
     </div>
     {showEdit&&<EditRecordModal rec={rec} onSave={u=>{onUpdate(u);setShowEdit(false);}} onClose={()=>setShowEdit(false)}/>}
+    </>
   );
 }
 
@@ -525,6 +627,10 @@ function AddCandidateModal({onAdd,onClose}){
   return(
     <Modal title="후보 추가하기" onClose={onClose}>
       <div style={{display:'flex',flexDirection:'column',gap:14}}>
+        <div>
+          <label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>🔍 장소 검색 <span style={{fontWeight:400,color:'#6c5ce7'}}>(선택하면 자동입력)</span></label>
+          <PlaceSearch onSelect={info=>setF(p=>({...p,name:p.name||info.name,address:p.address||info.address,naverUrl:p.naverUrl||info.naverUrl}))}/>
+        </div>
         <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)} placeholder="예: 홍대 도자기 공방"/>
         <div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>카테고리</div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{CATS.map(c=><button key={c} onClick={()=>set('cat',f.cat===c?'':c)} style={{border:'none',borderRadius:20,padding:'5px 12px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',background:f.cat===c?'#6c5ce7':'#F0EDFF',color:f.cat===c?'#fff':'#6c5ce7'}}>{CE[c]} {c}</button>)}</div></div>
         <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)} placeholder="어떤 활동을 하는지 간단히 설명해주세요"/>
@@ -544,7 +650,7 @@ function AddCandidateModal({onAdd,onClose}){
 /* ── AddRecordModal ──────────────────────────────────────────── */
 function AddRecordModal({candidates,onAdd,onClose}){
   const now=new Date();
-  const initDate=()=>{const d=nthWkday(now.getFullYear(),now.getMonth(),3,2);return d?fDate(d):'';};
+  const initDate=()=>{const d=nthWkday(now.getFullYear(),now.getMonth(),3,2);return d?toISO(d):'';};
   const [f,setF]=useState({candId:'',name:'',cat:'',month:toYM(now),date:initDate(),activity:'',price:'',address:'',naverUrl:''});
   const [afterParties,setAfterParties]=useState([]);
   const [fetching,setFetching]=useState(false);
@@ -563,7 +669,7 @@ function AddRecordModal({candidates,onAdd,onClose}){
     if(c) setF(p=>({...p,candId:cid,name:c.name,cat:c.cat||'',activity:c.activity||'',price:c.price?String(c.price):'',address:c.address||'',naverUrl:c.naverUrl||''}));
     else set('candId',cid);
   }
-  function onMonthChange(ym){set('month',ym);if(ym){const[y,m]=ym.split('-').map(Number);const d=nthWkday(y,m-1,3,2);if(d)set('date',fDate(d));}}
+  function onDateChange(d){set('date',d);set('month',d.slice(0,7));}
   function addParty(){setAfterParties(p=>[...p,{id:uid(),name:'',address:'',url:''}]);}
   function removeParty(id){setAfterParties(p=>p.filter(x=>x.id!==id));}
   function updateParty(id,k,v){setAfterParties(p=>p.map(x=>x.id===id?{...x,[k]:v}:x));}
@@ -577,13 +683,16 @@ function AddRecordModal({candidates,onAdd,onClose}){
     <Modal title="기록 추가하기" onClose={onClose}>
       <div style={{display:'flex',flexDirection:'column',gap:14}}>
         <div><label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>후보에서 불러오기 (선택)</label><select value={f.candId} onChange={e=>selectCand(e.target.value)} style={{...IS,color:f.candId?'#1a1a2e':'#9CA3AF'}}><option value="">직접 입력</option>{candidates.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+        <div>
+          <label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>🔍 장소 검색 <span style={{fontWeight:400,color:'#6c5ce7'}}>(선택하면 자동입력)</span></label>
+          <PlaceSearch onSelect={info=>setF(p=>({...p,name:p.name||info.name,address:p.address||info.address,naverUrl:p.naverUrl||info.naverUrl}))}/>
+        </div>
         <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)} placeholder="예: 홍대 도자기 공방"/>
         <div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>카테고리</div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{CATS.map(c=><button key={c} onClick={()=>set('cat',f.cat===c?'':c)} style={{border:'none',borderRadius:20,padding:'4px 11px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'inherit',background:f.cat===c?'#6c5ce7':'#F0EDFF',color:f.cat===c?'#fff':'#6c5ce7'}}>{CE[c]} {c}</button>)}</div></div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-          <div><label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>진행 월</label><input type="month" value={f.month} onChange={e=>onMonthChange(e.target.value)} style={IS}/></div>
+          <div><label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>📅 날짜</label><input type="date" value={f.date} onChange={e=>onDateChange(e.target.value)} style={{...IS,width:'100%'}}/></div>
           <FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} placeholder="45000" type="number"/>
         </div>
-        <FI label="날짜" value={f.date} onChange={e=>set('date',e.target.value)} placeholder="자동입력 (수정 가능)"/>
         <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)} placeholder="어떤 활동을 했는지 적어주세요" rows={3}/>
         <FI label="주소" value={f.address} onChange={e=>set('address',e.target.value)} placeholder="서울시 마포구 ..."/>
         <div style={{display:'flex',flexDirection:'column',gap:5}}>
@@ -630,6 +739,10 @@ function EditCandidateModal({cand,onSave,onClose}){
   return(
     <Modal title="후보 수정하기" onClose={onClose}>
       <div style={{display:'flex',flexDirection:'column',gap:14}}>
+        <div>
+          <label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>🔍 장소 검색 <span style={{fontWeight:400,color:'#6c5ce7'}}>(선택하면 자동입력)</span></label>
+          <PlaceSearch onSelect={info=>setF(p=>({...p,name:info.name,address:info.address,naverUrl:info.naverUrl}))}/>
+        </div>
         <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)}/>
         <div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>카테고리</div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{CATS.map(c=><button key={c} onClick={()=>set('cat',f.cat===c?'':c)} style={{border:'none',borderRadius:20,padding:'5px 12px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',background:f.cat===c?'#6c5ce7':'#F0EDFF',color:f.cat===c?'#fff':'#6c5ce7'}}>{CE[c]} {c}</button>)}</div></div>
         <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)}/>
@@ -648,7 +761,7 @@ function EditCandidateModal({cand,onSave,onClose}){
 
 /* ── EditRecordModal ─────────────────────────────────────────── */
 function EditRecordModal({rec,onSave,onClose}){
-  const [f,setF]=useState({name:rec.name||'',cat:rec.cat||'',month:rec.month||'',date:rec.date||'',activity:rec.activity||'',price:rec.price||'',address:rec.address||'',naverUrl:rec.naverUrl||''});
+  const [f,setF]=useState({name:rec.name||'',cat:rec.cat||'',month:rec.month||'',date:(/^\d{4}-\d{2}-\d{2}$/.test(rec.date||''))?rec.date:'',activity:rec.activity||'',price:rec.price||'',address:rec.address||'',naverUrl:rec.naverUrl||''});
   const [afterParties,setAfterParties]=useState(getAfterParties(rec).map(p=>({...p,id:p.id||uid()})));
   const [fetching,setFetching]=useState(false);
   const set=(k,v)=>setF(p=>({...p,[k]:v}));
@@ -663,10 +776,9 @@ function EditRecordModal({rec,onSave,onClose}){
         <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)}/>
         <div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>카테고리</div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{CATS.map(c=><button key={c} onClick={()=>set('cat',f.cat===c?'':c)} style={{border:'none',borderRadius:20,padding:'4px 11px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'inherit',background:f.cat===c?'#6c5ce7':'#F0EDFF',color:f.cat===c?'#fff':'#6c5ce7'}}>{CE[c]} {c}</button>)}</div></div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-          <div><label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>진행 월</label><input type="month" value={f.month} onChange={e=>set('month',e.target.value)} style={IS}/></div>
+          <div><label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>📅 날짜</label><input type="date" value={f.date} onChange={e=>{const d=e.target.value;set('date',d);set('month',d.slice(0,7));}} style={{...IS,width:'100%'}}/></div>
           <FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} type="number"/>
         </div>
-        <FI label="날짜" value={f.date} onChange={e=>set('date',e.target.value)}/>
         <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)} rows={3}/>
         <FI label="주소" value={f.address} onChange={e=>set('address',e.target.value)}/>
         <div style={{display:'flex',flexDirection:'column',gap:5}}>
@@ -776,10 +888,16 @@ function HomeTab({candidates,records,confirmed,onConfirm,nick,onCandClick}){
 function RecordsTab({records,candidates,onSave,nick}){
   const [detail,setDetail]=useState(null);
   const [showAdd,setShowAdd]=useState(false);
+  useEffect(()=>{
+    const onPop=()=>setDetail(null);
+    window.addEventListener('popstate',onPop);
+    return()=>window.removeEventListener('popstate',onPop);
+  },[]);
+  function openDetail(id){window.history.pushState({detail:id,tab:'records'},'');setDetail(id);}
   if(detail){
     const rec=records.find(r=>r.id===detail);
     if(!rec){setDetail(null);return null;}
-    return <div className="content-wrap"><RecordDetail rec={rec} nick={nick} onUpdate={u=>onSave(records.map(r=>r.id===u.id?u:r))} onDelete={()=>{onSave(records.filter(r=>r.id!==detail));setDetail(null);}} onBack={()=>setDetail(null)}/></div>;
+    return <div className="content-wrap"><RecordDetail rec={rec} nick={nick} onUpdate={u=>onSave(records.map(r=>r.id===u.id?u:r))} onBack={()=>window.history.back()}/></div>;
   }
   const sorted=[...records].sort((a,b)=>(a.month||'')<(b.month||'')?-1:(a.month||'')>(b.month||'')?1:0);
   return(
@@ -789,7 +907,7 @@ function RecordsTab({records,candidates,onSave,nick}){
         <Btn onClick={()=>setShowAdd(true)}>＋ 기록 추가</Btn>
       </div>
       {sorted.length===0?<Empty emoji="📖" title="아직 기록이 없어요" sub="다녀온 클래스를 기록해보세요!"/>
-        :<div style={{display:'flex',flexDirection:'column',gap:12}}>{sorted.map(r=><RecordCard key={r.id} rec={r} onClick={()=>setDetail(r.id)}/>)}</div>}
+        :<div style={{display:'flex',flexDirection:'column',gap:12}}>{sorted.map(r=><RecordCard key={r.id} rec={r} onClick={()=>openDetail(r.id)}/>)}</div>}
       {showAdd&&<AddRecordModal candidates={candidates} onAdd={r=>onSave([...records,r])} onClose={()=>setShowAdd(false)}/>}
     </div>
   );
@@ -799,10 +917,16 @@ function RecordsTab({records,candidates,onSave,nick}){
 function CandidatesTab({candidates,onSave,nick}){
   const [detail,setDetail]=useState(null);
   const [showAdd,setShowAdd]=useState(false);
+  useEffect(()=>{
+    const onPop=()=>setDetail(null);
+    window.addEventListener('popstate',onPop);
+    return()=>window.removeEventListener('popstate',onPop);
+  },[]);
+  function openDetail(id){window.history.pushState({detail:id,tab:'candidates'},'');setDetail(id);}
   if(detail){
     const cand=candidates.find(c=>c.id===detail);
     if(!cand){setDetail(null);return null;}
-    return <div className="content-wrap"><CandidateDetail cand={cand} nick={nick} onUpdate={u=>onSave(candidates.map(c=>c.id===u.id?u:c))} onDelete={()=>{onSave(candidates.filter(c=>c.id!==detail));setDetail(null);}} onBack={()=>setDetail(null)}/></div>;
+    return <div className="content-wrap"><CandidateDetail cand={cand} nick={nick} onUpdate={u=>onSave(candidates.map(c=>c.id===u.id?u:c))} onBack={()=>window.history.back()}/></div>;
   }
   const sorted=[...candidates].sort((a,b)=>calcScore(b)-calcScore(a));
   return(
@@ -813,7 +937,7 @@ function CandidatesTab({candidates,onSave,nick}){
       </div>
       {!nick&&<div style={{background:'#FEF3C7',border:'1.5px solid #FDE68A',borderRadius:14,padding:'12px 16px',marginBottom:16,fontSize:13,color:'#92400E'}}>⚠️ 투표하려면 우측 상단에서 닉네임을 설정해주세요</div>}
       {sorted.length===0?<Empty emoji="📋" title="아직 후보가 없어요" sub="가고싶은 클래스를 추가해보세요!"/>
-        :<div style={{display:'flex',flexDirection:'column',gap:12}}>{sorted.map((c,i)=><CandidateCard key={c.id} cand={c} onClick={()=>setDetail(c.id)} myVote={c.votes?.[nick]} rank={i<3&&calcScore(c)>0?i:null}/>)}</div>}
+        :<div style={{display:'flex',flexDirection:'column',gap:12}}>{sorted.map((c,i)=><CandidateCard key={c.id} cand={c} onClick={()=>openDetail(c.id)} myVote={c.votes?.[nick]} rank={i<3&&calcScore(c)>0?i:null}/>)}</div>}
       {showAdd&&<AddCandidateModal onAdd={c=>onSave([...candidates,c])} onClose={()=>setShowAdd(false)}/>}
     </div>
   );
@@ -845,7 +969,7 @@ function App(){
   async function confirmClass(ym,candId){
     const newConf={...confirmed,[ym]:candId};await saveConf(newConf);
     const cand=candidates.find(c=>c.id===candId);if(!cand)return;
-    const[y,m]=ym.split('-').map(Number);const d=nthWkday(y,m-1,3,2);const dateStr=d?fDate(d):'';
+    const[y,m]=ym.split('-').map(Number);const d=nthWkday(y,m-1,3,2);const dateStr=d?toISO(d):'';
     const stubIdx=records.findIndex(r=>r.month===ym&&r.isStub);
     const hasReal=records.some(r=>r.month===ym&&!r.isStub);
     if(stubIdx>=0){
