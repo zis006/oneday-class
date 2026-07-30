@@ -62,9 +62,6 @@ if (CONFIGURED) {
   } catch(e) { console.warn('Firebase 초기화 실패:', e); }
 }
 
-/* ── Kakao REST API 키 ───────────────────────────────────────── */
-const KAKAO_REST = 'f89d3cb33646b4ff8cae87322dfff492';
-
 /* ── Cloudinary 설정 ─────────────────────────────────────────── */
 const CLOUDINARY_CLOUD = 'r9jlchwx';
 const CLOUDINARY_PRESET = 'oneday-class';
@@ -212,11 +209,11 @@ function PlaceSearch({onSelect}){
     setLoading(true);
     try{
       const res=await fetch(
-        `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(keyword)}&size=8`,
-        {headers:{Authorization:`KakaoAK ${KAKAO_REST}`}}
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(keyword)}&format=json&accept-language=ko&limit=8&countrycodes=kr&addressdetails=1`,
+        {headers:{'Accept':'application/json','User-Agent':'OnedayClassApp/1.0'}}
       );
       const data=await res.json();
-      setResults(data.documents||[]);
+      setResults(data||[]);
       setOpen(true);
     }catch(e){console.error('검색 오류',e);}
     setLoading(false);
@@ -229,9 +226,10 @@ function PlaceSearch({onSelect}){
   }
 
   function select(r){
+    const name=r.namedetails?.name||r.name||r.display_name.split(',')[0];
     onSelect({
-      name:r.place_name,
-      naverUrl:`https://map.naver.com/v5/search/${encodeURIComponent(r.place_name)}`,
+      name,
+      naverUrl:`https://map.naver.com/v5/search/${encodeURIComponent(name)}`,
     });
     setQ('');setResults([]);setOpen(false);
   }
@@ -249,8 +247,8 @@ function PlaceSearch({onSelect}){
           {results.map((r,i)=>(
             <button key={i} onClick={()=>select(r)}
               style={{width:'100%',padding:'10px 14px',background:'none',border:'none',borderBottom:i<results.length-1?'1px solid #F0EDFF':'none',cursor:'pointer',textAlign:'left',fontFamily:'inherit',display:'block'}}>
-              <div style={{fontWeight:700,fontSize:14,color:'#1a1a2e',marginBottom:2}}>{r.place_name}</div>
-              <div style={{fontSize:11,color:'#a0aec0'}}>{(r.category_name||'').split(' > ').pop()||''}</div>
+              <div style={{fontWeight:700,fontSize:14,color:'#1a1a2e',marginBottom:2}}>{r.namedetails?.name||r.name||r.display_name.split(',')[0]}</div>
+              <div style={{fontSize:11,color:'#a0aec0'}}>{r.type||r.class||''}</div>
             </button>
           ))}
         </div>
