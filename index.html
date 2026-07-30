@@ -182,74 +182,82 @@ function ScoreBadge({score}){const c=score>0?'#6c5ce7':score<0?'#EF4444':'#94A3B
 function VoteBreakdown({votes}){const cnt={};Object.values(votes||{}).forEach(v=>{cnt[v]=(cnt[v]||0)+1;});const items=VOPTS.filter(o=>cnt[o.k]);if(!items.length)return null;return <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>{items.map(o=><span key={o.k} style={{fontSize:11,background:o.bg,color:o.color,borderRadius:20,padding:'2px 8px',border:`1px solid ${o.border}`,fontWeight:700}}>{o.e} {cnt[o.k]}</span>)}</div>;}
 function InfoRow({icon,label,val}){return <div style={{display:'flex',gap:8,alignItems:'flex-start'}}><span style={{fontSize:16,flexShrink:0}}>{icon}</span><div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:1}}>{label}</div><div style={{fontSize:14,color:'#374151',lineHeight:1.5}}>{val}</div></div></div>;}
 
-/* ── PlaceSearch (카카오맵 SDK) ──────────────────────────────── */
+/* ── PlaceSearch (카카오맵 SDK + fixed 드롭다운) ─────────────── */
 function PlaceSearch({onSelect}){
   const [q,setQ]=useState('');
   const [results,setResults]=useState([]);
   const [loading,setLoading]=useState(false);
   const [open,setOpen]=useState(false);
-  const ref=useRef();
+  const [dropStyle,setDropStyle]=useState({});
+  const inputRef=useRef();
+  const wrapRef=useRef();
   const timerRef=useRef(null);
 
   useEffect(()=>{
-    function onClickOut(e){if(ref.current&&!ref.current.contains(e.target))setOpen(false);}
+    function onClickOut(e){if(wrapRef.current&&!wrapRef.current.contains(e.target))setOpen(false);}
     document.addEventListener('mousedown',onClickOut);
     return()=>document.removeEventListener('mousedown',onClickOut);
   },[]);
 
+  function updateDropPos(){
+    if(!inputRef.current) return;
+    const r=inputRef.current.getBoundingClientRect();
+    setDropStyle({position:'fixed',top:r.bottom+4,left:r.left,width:r.width,zIndex:9999});
+  }
+
   function search(keyword){
     if(!keyword.trim()){setResults([]);setOpen(false);return;}
-    if(!window.kakao||!window.kakao.maps){setResults([]);return;}
+    if(!window.kakao||!window.kakao.maps||!window.kakao.maps.services){
+      console.warn('카카오맵 SDK 로딩 중...');return;
+    }
     setLoading(true);
     const ps=new kakao.maps.services.Places();
     ps.keywordSearch(keyword,(data,status)=>{
       setLoading(false);
       if(status===kakao.maps.services.Status.OK){
-        setResults(data.slice(0,7));
-        setOpen(true);
+        setResults(data.slice(0,8));setOpen(true);
       } else {
-        setResults([]);
-        setOpen(true);
+        setResults([]);setOpen(true);
       }
-    });
+    },{size:8});
   }
 
   function onChange(e){
     const val=e.target.value;
     setQ(val);
+    updateDropPos();
     if(timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current=setTimeout(()=>search(val),350);
+    timerRef.current=setTimeout(()=>search(val),300);
   }
 
   function select(r){
     onSelect({
-      name: r.place_name,
-      address: r.road_address_name||r.address_name,
-      naverUrl: `https://map.naver.com/v5/search/${encodeURIComponent(r.place_name)}`,
+      name:r.place_name,
+      naverUrl:`https://map.naver.com/v5/search/${encodeURIComponent(r.place_name)}`,
     });
     setQ('');setResults([]);setOpen(false);
   }
 
   return(
-    <div ref={ref} style={{position:'relative'}}>
+    <div ref={wrapRef}>
       <div style={{position:'relative'}}>
-        <input value={q} onChange={onChange} placeholder="🔍 장소명 검색 (예: 홍대 도예공방)" style={{...IS,paddingRight:36}}/>
-        {loading&&<span style={{position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',fontSize:13,color:'#bbb'}}>⏳</span>}
+        <input ref={inputRef} value={q} onChange={onChange} onFocus={updateDropPos}
+          placeholder="공방 이름을 검색해보세요" style={{...IS,paddingRight:36}}/>
+        {loading&&<span style={{position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',fontSize:13,color:'#6c5ce7'}}>⏳</span>}
       </div>
       {open&&results.length>0&&(
-        <div style={{position:'absolute',top:'calc(100% + 4px)',left:0,right:0,background:'#fff',border:'1.5px solid #E2D9FF',borderRadius:12,zIndex:200,maxHeight:280,overflowY:'auto',boxShadow:'0 8px 24px rgba(108,92,231,.12)'}}>
+        <div style={{...dropStyle,background:'#fff',border:'1.5px solid #E2D9FF',borderRadius:12,maxHeight:260,overflowY:'auto',boxShadow:'0 8px 32px rgba(108,92,231,.18)'}}>
           {results.map((r,i)=>(
             <button key={i} onClick={()=>select(r)}
-              style={{width:'100%',padding:'10px 14px',background:'none',border:'none',borderBottom:i<results.length-1?'1px solid #F0EDFF':'none',cursor:'pointer',textAlign:'left',fontFamily:'inherit'}}>
+              style={{width:'100%',padding:'10px 14px',background:'none',border:'none',borderBottom:i<results.length-1?'1px solid #F0EDFF':'none',cursor:'pointer',textAlign:'left',fontFamily:'inherit',display:'block'}}>
               <div style={{fontWeight:700,fontSize:14,color:'#1a1a2e',marginBottom:2}}>{r.place_name}</div>
-              <div style={{fontSize:12,color:'#64748B',marginBottom:1}}>{r.road_address_name||r.address_name}</div>
               <div style={{fontSize:11,color:'#a0aec0'}}>{(r.category_name||'').split(' > ').pop()||''}</div>
             </button>
           ))}
         </div>
       )}
-      {open&&results.length===0&&!loading&&(
-        <div style={{position:'absolute',top:'calc(100% + 4px)',left:0,right:0,background:'#fff',border:'1.5px solid #E2D9FF',borderRadius:12,zIndex:200,padding:'12px 14px',fontSize:13,color:'#bbb',boxShadow:'0 8px 24px rgba(0,0,0,.08)'}}>
+      {open&&results.length===0&&!loading&&q.length>0&&(
+        <div style={{...dropStyle,background:'#fff',border:'1.5px solid #E2D9FF',borderRadius:12,padding:'12px 14px',fontSize:13,color:'#bbb',boxShadow:'0 8px 24px rgba(0,0,0,.08)'}}>
           검색 결과가 없어요
         </div>
       )}
