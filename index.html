@@ -237,7 +237,7 @@ function PlaceSearch({onSelect}){
               style={{width:'100%',padding:'10px 14px',background:'none',border:'none',borderBottom:i<results.length-1?'1px solid #F0EDFF':'none',cursor:'pointer',textAlign:'left',fontFamily:'inherit'}}>
               <div style={{fontWeight:700,fontSize:14,color:'#1a1a2e',marginBottom:2}}>{r.place_name}</div>
               <div style={{fontSize:12,color:'#64748B',marginBottom:1}}>{r.road_address_name||r.address_name}</div>
-              <div style={{fontSize:11,color:'#a0aec0'}}>{r.category_name?.split(' > ').slice(-1)[0]||''}</div>
+              <div style={{fontSize:11,color:'#a0aec0'}}>{(r.category_name||'').split(' > ').pop()||''}</div>
             </button>
           ))}
         </div>
@@ -301,7 +301,7 @@ function CandidateCard({cand,onClick,myVote,rank}){
         </div>
         <div style={{textAlign:'right',flexShrink:0,display:'flex',flexDirection:'column',alignItems:'flex-end',gap:4}}>
           <ScoreBadge score={score}/>
-          {myVote&&<span style={{fontSize:11,color:'#6c5ce7',fontWeight:700}}>{VOPTS.find(o=>o.k===myVote)?.e}</span>}
+          {myVote&&<span style={{fontSize:11,color:'#6c5ce7',fontWeight:700}}>{(VOPTS.find(o=>o.k===myVote)||{}).e}</span>}
         </div>
       </div>
     </div>
@@ -319,7 +319,7 @@ function CandidateDetail({cand,onUpdate,nick,onBack,inModal}){
     onUpdate({...cand,votes:{...(cand.votes||{}),[nick.trim()]:key}});
   }
   return(
-    <>
+    <React.Fragment>
     <div>
       {!inModal&&<BackBtn onClick={onBack}/>}
       <div style={{...CS,marginBottom:14}}>
@@ -366,7 +366,7 @@ function CandidateDetail({cand,onUpdate,nick,onBack,inModal}){
       </div>
     </div>
     {showEdit&&<EditCandidateModal cand={cand} onSave={u=>{onUpdate(u);setShowEdit(false);}} onClose={()=>setShowEdit(false)}/>}
-    </>
+    </React.Fragment>
   );
 }
 
@@ -474,7 +474,7 @@ function RecordDetail({rec,onUpdate,nick,onBack}){
   );
 
   return(
-    <>
+    <React.Fragment>
     <div>
       <BackBtn onClick={onBack}/>
 
@@ -606,7 +606,7 @@ function RecordDetail({rec,onUpdate,nick,onBack}){
       </div>
     </div>
     {showEdit&&<EditRecordModal rec={rec} onSave={u=>{onUpdate(u);setShowEdit(false);}} onClose={()=>setShowEdit(false)}/>}
-    </>
+    </React.Fragment>
   );
 }
 
