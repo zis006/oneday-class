@@ -35,6 +35,7 @@ input,textarea,button,select{font-family:inherit}
 </head>
 <body>
 <div id="root"></div>
+<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey=0cc88a824b3df7840864ac704112ba55&libraries=services"></script>
 <script type="text/babel">
 const {useState,useEffect,useRef} = React;
 
@@ -61,9 +62,6 @@ if (CONFIGURED) {
     db = firebase.firestore();
   } catch(e) { console.warn('Firebase 초기화 실패:', e); }
 }
-
-/* ── Kakao Local Search 설정 ─────────────────────────────────── */
-const KAKAO_KEY = 'f89d3cb33646b4ff8cae87322dfff492';
 
 /* ── Cloudinary 설정 ─────────────────────────────────────────── */
 const CLOUDINARY_CLOUD = 'r9jlchwx';
@@ -184,13 +182,14 @@ function ScoreBadge({score}){const c=score>0?'#6c5ce7':score<0?'#EF4444':'#94A3B
 function VoteBreakdown({votes}){const cnt={};Object.values(votes||{}).forEach(v=>{cnt[v]=(cnt[v]||0)+1;});const items=VOPTS.filter(o=>cnt[o.k]);if(!items.length)return null;return <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>{items.map(o=><span key={o.k} style={{fontSize:11,background:o.bg,color:o.color,borderRadius:20,padding:'2px 8px',border:`1px solid ${o.border}`,fontWeight:700}}>{o.e} {cnt[o.k]}</span>)}</div>;}
 function InfoRow({icon,label,val}){return <div style={{display:'flex',gap:8,alignItems:'flex-start'}}><span style={{fontSize:16,flexShrink:0}}>{icon}</span><div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:1}}>{label}</div><div style={{fontSize:14,color:'#374151',lineHeight:1.5}}>{val}</div></div></div>;}
 
-/* ── PlaceSearch (카카오 장소 검색) ─────────────────────────── */
+/* ── PlaceSearch (카카오맵 SDK) ──────────────────────────────── */
 function PlaceSearch({onSelect}){
   const [q,setQ]=useState('');
   const [results,setResults]=useState([]);
   const [loading,setLoading]=useState(false);
   const [open,setOpen]=useState(false);
   const ref=useRef();
+  const timerRef=useRef(null);
 
   useEffect(()=>{
     function onClickOut(e){if(ref.current&&!ref.current.contains(e.target))setOpen(false);}
@@ -198,28 +197,35 @@ function PlaceSearch({onSelect}){
     return()=>document.removeEventListener('mousedown',onClickOut);
   },[]);
 
-  useEffect(()=>{
-    if(!q.trim()||q.length<1){setResults([]);setOpen(false);return;}
-    const t=setTimeout(async()=>{
-      if(KAKAO_KEY==='여기에_REST_API_키_붙여넣기'){alert('카카오 REST API 키를 설정해주세요');return;}
-      setLoading(true);
-      try{
-        const res=await fetch(`https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(q)}&size=7`,
-          {headers:{Authorization:`KakaoAK ${KAKAO_KEY}`}});
-        const data=await res.json();
-        setResults(data.documents||[]);
-        setOpen(true);
-      }catch(e){console.error(e);}
+  function search(keyword){
+    if(!keyword.trim()){setResults([]);setOpen(false);return;}
+    if(!window.kakao||!window.kakao.maps){setResults([]);return;}
+    setLoading(true);
+    const ps=new kakao.maps.services.Places();
+    ps.keywordSearch(keyword,(data,status)=>{
       setLoading(false);
-    },350);
-    return()=>clearTimeout(t);
-  },[q]);
+      if(status===kakao.maps.services.Status.OK){
+        setResults(data.slice(0,7));
+        setOpen(true);
+      } else {
+        setResults([]);
+        setOpen(true);
+      }
+    });
+  }
+
+  function onChange(e){
+    const val=e.target.value;
+    setQ(val);
+    if(timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current=setTimeout(()=>search(val),350);
+  }
 
   function select(r){
     onSelect({
       name: r.place_name,
       address: r.road_address_name||r.address_name,
-      naverUrl: `https://map.naver.com/v5/search/${encodeURIComponent(r.place_name+' '+(r.road_address_name||r.address_name).split(' ').slice(0,3).join(' '))}`,
+      naverUrl: `https://map.naver.com/v5/search/${encodeURIComponent(r.place_name)}`,
     });
     setQ('');setResults([]);setOpen(false);
   }
@@ -227,7 +233,7 @@ function PlaceSearch({onSelect}){
   return(
     <div ref={ref} style={{position:'relative'}}>
       <div style={{position:'relative'}}>
-        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="🔍 장소명 검색 (예: 홍대 도예공방)" style={{...IS,paddingRight:36}}/>
+        <input value={q} onChange={onChange} placeholder="🔍 장소명 검색 (예: 홍대 도예공방)" style={{...IS,paddingRight:36}}/>
         {loading&&<span style={{position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',fontSize:13,color:'#bbb'}}>⏳</span>}
       </div>
       {open&&results.length>0&&(
@@ -242,7 +248,7 @@ function PlaceSearch({onSelect}){
           ))}
         </div>
       )}
-      {open&&results.length===0&&!loading&&q.length>0&&(
+      {open&&results.length===0&&!loading&&(
         <div style={{position:'absolute',top:'calc(100% + 4px)',left:0,right:0,background:'#fff',border:'1.5px solid #E2D9FF',borderRadius:12,zIndex:200,padding:'12px 14px',fontSize:13,color:'#bbb',boxShadow:'0 8px 24px rgba(0,0,0,.08)'}}>
           검색 결과가 없어요
         </div>
