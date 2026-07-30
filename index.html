@@ -9,14 +9,13 @@
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;background:#F5F4EF;font-family:'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif;-webkit-font-smoothing:antialiased}
 #root{min-height:100vh}
 input,textarea,button,select{font-family:inherit}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:#E2D9FF;border-radius:4px}
-
-/* ── Top nav ── */
 .nav-wrap{background:#fff;border-bottom:1.5px solid #EDE8FF;position:sticky;top:0;z-index:100}
 .nav-inner{display:flex;align-items:center;justify-content:space-between;padding:14px 20px 0;max-width:1200px;margin:0 auto}
 .nav-title{font-weight:900;font-size:16px;color:#1a1a2e}
@@ -24,23 +23,14 @@ input,textarea,button,select{font-family:inherit}
 .nav-tabs{display:flex;max-width:1200px;margin:0 auto;padding:0 20px}
 .nav-tab{flex:none;padding:10px 16px;background:none;border:none;border-bottom:2.5px solid transparent;color:#bbb;font-size:13px;font-weight:700;cursor:pointer;transition:all .15s;margin-bottom:-1.5px}
 .nav-tab.active{border-bottom-color:#6c5ce7;color:#6c5ce7}
-
-/* ── Main content ── */
 .main{max-width:1200px;margin:0 auto;padding:24px 20px 80px}
-
-/* ── Responsive ── */
+.photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 @media(min-width:768px){
-  .nav-inner{padding:18px 40px 0}
-  .nav-tabs{padding:0 40px}
-  .nav-tab{padding:12px 22px;font-size:14px}
-  .main{padding:32px 40px 60px}
-  .home-grid{display:grid;grid-template-columns:380px 1fr;gap:28px;align-items:start}
-  .content-wrap{max-width:760px;margin:0 auto}
+  .nav-inner{padding:18px 40px 0}.nav-tabs{padding:0 40px}.nav-tab{padding:12px 22px;font-size:14px}
+  .main{padding:32px 40px 60px}.home-grid{display:grid;grid-template-columns:380px 1fr;gap:28px;align-items:start}
+  .content-wrap{max-width:760px;margin:0 auto}.photo-grid{grid-template-columns:repeat(4,1fr)}
 }
-@media(max-width:767px){
-  .home-grid{display:flex;flex-direction:column;gap:24px}
-  .content-wrap{width:100%}
-}
+@media(max-width:767px){.home-grid{display:flex;flex-direction:column;gap:24px}.content-wrap{width:100%}}
 </style>
 </head>
 <body>
@@ -49,12 +39,9 @@ input,textarea,button,select{font-family:inherit}
 const {useState,useEffect,useRef} = React;
 
 /* ═══════════════════════════════════════════════════════════════
-   🔥 Firebase 설정 (첫 배포 전에 아래 값을 채워주세요)
-   1. https://console.firebase.google.com 접속
-   2. 새 프로젝트 생성
-   3. Firestore Database → "테스트 모드"로 시작
-   4. 프로젝트 설정 > 웹 앱 추가 → 아래에 붙여넣기
-   ※ 설정 전에도 localStorage 임시모드로 동작합니다
+   🔥 Firebase 설정
+   ※ Firebase Storage 활성화도 필요해요:
+      Firebase 콘솔 → Storage → 시작하기 → 테스트 모드
 ═══════════════════════════════════════════════════════════════ */
 const FIREBASE_CONFIG = {
   apiKey:            "AIzaSyCsU4kItKc3hytFBmyiGUMRqYwf_9isTBs",
@@ -66,84 +53,139 @@ const FIREBASE_CONFIG = {
   measurementId:     "G-V85BRDYE24"
 };
 
-/* ── Firebase init ────────────────────────────────────────────── */
 let db = null;
 const CONFIGURED = FIREBASE_CONFIG.apiKey !== "여기에_붙여넣기";
 if (CONFIGURED) {
-  try { firebase.initializeApp(FIREBASE_CONFIG); db = firebase.firestore(); }
-  catch(e) { console.warn('Firebase 초기화 실패:', e); }
+  try {
+    firebase.initializeApp(FIREBASE_CONFIG);
+    db = firebase.firestore();
+  } catch(e) { console.warn('Firebase 초기화 실패:', e); }
 }
+
+/* ── Cloudinary 설정 ─────────────────────────────────────────── */
+const CLOUDINARY_CLOUD = 'r9jlchwx';
+const CLOUDINARY_PRESET = 'oneday-class';
 const DOC = () => db && db.collection('od_club').doc('shared');
 
-async function fbGet() {
-  if (!db) { try { return JSON.parse(localStorage.getItem('od_shared')||'{}'); } catch { return {}; } }
-  try { const s = await DOC().get(); return s.exists ? s.data() : {}; } catch { return {}; }
+async function fbGet(){
+  if(!db){try{return JSON.parse(localStorage.getItem('od_shared')||'{}');}catch{return {};}}
+  try{const s=await DOC().get();return s.exists?s.data():{};}catch{return {};}
 }
-async function fbSet(key, val) {
-  if (!db) {
-    const cur = JSON.parse(localStorage.getItem('od_shared')||'{}');
-    localStorage.setItem('od_shared', JSON.stringify({...cur,[key]:val})); return;
-  }
-  try { await DOC().set({[key]:val},{merge:true}); } catch(e){console.error(e);}
+async function fbSet(key,val){
+  if(!db){const cur=JSON.parse(localStorage.getItem('od_shared')||'{}');localStorage.setItem('od_shared',JSON.stringify({...cur,[key]:val}));return;}
+  try{await DOC().set({[key]:val},{merge:true});}catch(e){console.error(e);}
 }
-function fbListen(cb) {
-  if (!db) return ()=>{};
-  return DOC().onSnapshot(s=>{ if(s.exists) cb(s.data()); });
+function fbListen(cb){
+  if(!db)return()=>{};
+  return DOC().onSnapshot(s=>{if(s.exists)cb(s.data());});
 }
 
-/* ── Nickname (localStorage) ─────────────────────────────────── */
-const getNick   = ()  => localStorage.getItem('od_nick') || '';
-const saveNick  = (v) => localStorage.setItem('od_nick', v);
+/* ── 사진 업로드 (Cloudinary) ───────────────────────────────── */
+async function uploadPhoto(file) {
+  if(file.size > 10*1024*1024){alert('10MB 이하 사진만 올릴 수 있어요');return null;}
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('upload_preset', CLOUDINARY_PRESET);
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, {
+      method: 'POST', body: form
+    });
+    const data = await res.json();
+    if(data.secure_url) return data.secure_url;
+    throw new Error(data.error?.message || '업로드 실패');
+  } catch(e) {
+    console.error(e);
+    alert('사진 업로드 실패: ' + e.message);
+    return null;
+  }
+}
+
+/* ── Nickname ────────────────────────────────────────────────── */
+const getNick  = () => localStorage.getItem('od_nick')||'';
+const saveNick = v  => localStorage.setItem('od_nick', v);
 
 /* ── Utilities ───────────────────────────────────────────────── */
-const uid = () => Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-const WD  = ['일','월','화','수','목','금','토'];
-const SM  = {당장:2,언젠가:1,안함:-1,절대안함:-2};
-const calcScore = c => Object.values(c.votes||{}).reduce((s,v)=>s+(SM[v]||0),0);
-const CATS = ['도예','요리','베이킹','공예','그림','플라워','캘리','가죽','기타'];
-const CE = {도예:'🏺',요리:'🍳',베이킹:'🥐',공예:'✂️',그림:'🎨',플라워:'💐',캘리:'✒️',가죽:'👜',기타:'✨'};
-const VOPTS = [
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const WD=['일','월','화','수','목','금','토'];
+const SM={당장:2,언젠가:1,안함:-1,절대안함:-2};
+const calcScore=c=>Object.values(c.votes||{}).reduce((s,v)=>s+(SM[v]||0),0);
+const CATS=['도예','요리','베이킹','공예','그림','플라워','캘리','가죽','기타'];
+const CE={도예:'🏺',요리:'🍳',베이킹:'🥐',공예:'✂️',그림:'🎨',플라워:'💐',캘리:'✒️',가죽:'👜',기타:'✨'};
+const VOPTS=[
   {k:'당장',label:'당장하고싶다',e:'🔥',color:'#e53e3e',bg:'#FFF5F5',border:'#FED7D7'},
   {k:'언젠가',label:'언젠가하고싶다',e:'👍',color:'#6c5ce7',bg:'#FAF5FF',border:'#E9D8FD'},
   {k:'안함',label:'안하고싶다',e:'😐',color:'#d97706',bg:'#FFFBEB',border:'#FDE68A'},
   {k:'절대안함',label:'절대안하고싶다',e:'🙅',color:'#718096',bg:'#F7FAFC',border:'#E2E8F0'},
 ];
-
 function nthWkday(year,month,wday,n){
   const base=new Date(year,month,1);const[y,m]=[base.getFullYear(),base.getMonth()];let c=0;
   for(let d=1;d<=31;d++){const dt=new Date(y,m,d);if(dt.getMonth()!==m)break;if(dt.getDay()===wday&&++c===n)return dt;}
   return null;
 }
-function getNextClassDate(){
-  const now=new Date();const[y,m]=[now.getFullYear(),now.getMonth()];
-  const cur=nthWkday(y,m,3,2);return(cur&&cur>now)?cur:nthWkday(y,m+1,3,2);
+function getNextClassDate(){const now=new Date();const[y,m]=[now.getFullYear(),now.getMonth()];const cur=nthWkday(y,m,3,2);return(cur&&cur>now)?cur:nthWkday(y,m+1,3,2);}
+const fDate=d=>d?`${d.getFullYear()}년 ${d.getMonth()+1}월 ${d.getDate()}일 (${WD[d.getDay()]})`:'';
+const toYM=d=>d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`:'';
+const ymLabel=ym=>{if(!ym)return'';const[y,m]=ym.split('-');return`${y}년 ${+m}월`;};
+const daysUntil=d=>{const a=new Date();a.setHours(0,0,0,0);const b=new Date(d);b.setHours(0,0,0,0);return Math.round((b-a)/86400000);};
+
+/* ── 뒷풀이 정규화 (구버전 호환) ─────────────────────────────── */
+function getAfterParties(rec){
+  if(rec.afterParties&&rec.afterParties.length>0) return rec.afterParties;
+  if(rec.afterPartyName||rec.afterPartyAddress)
+    return [{id:'legacy',name:rec.afterPartyName||'',address:rec.afterPartyAddress||'',url:rec.afterPartyUrl||''}];
+  return [];
 }
-const fDate    = d => d?`${d.getFullYear()}년 ${d.getMonth()+1}월 ${d.getDate()}일 (${WD[d.getDay()]})`:'';
-const toYM     = d => d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`:'';
-const ymLabel  = ym => {if(!ym)return'';const[y,m]=ym.split('-');return`${y}년 ${+m}월`;};
-const daysUntil= d => {const a=new Date();a.setHours(0,0,0,0);const b=new Date(d);b.setHours(0,0,0,0);return Math.round((b-a)/86400000);};
 
 /* ── Base styles ─────────────────────────────────────────────── */
-const IS = {border:'1.5px solid #E2D9FF',borderRadius:10,padding:'9px 12px',fontSize:14,width:'100%',boxSizing:'border-box',outline:'none',fontFamily:'inherit',color:'#1a1a2e',background:'#FAFAF8'};
-const CS = {background:'#fff',borderRadius:18,padding:'16px',boxShadow:'0 2px 12px rgba(108,92,231,.08)',border:'1.5px solid #F0EDFF'};
+const IS={border:'1.5px solid #E2D9FF',borderRadius:10,padding:'9px 12px',fontSize:14,width:'100%',boxSizing:'border-box',outline:'none',fontFamily:'inherit',color:'#1a1a2e',background:'#FAFAF8'};
+const CS={background:'#fff',borderRadius:18,padding:'16px',boxShadow:'0 2px 12px rgba(108,92,231,.08)',border:'1.5px solid #F0EDFF'};
 
 /* ── UI atoms ────────────────────────────────────────────────── */
 function FI({label,...p}){return <div style={{display:'flex',flexDirection:'column',gap:5}}>{label&&<label style={{fontSize:12,fontWeight:700,color:'#6B7280'}}>{label}</label>}<input style={IS} {...p}/></div>;}
 function FT({label,rows=3,...p}){return <div style={{display:'flex',flexDirection:'column',gap:5}}>{label&&<label style={{fontSize:12,fontWeight:700,color:'#6B7280'}}>{label}</label>}<textarea style={{...IS,resize:'none'}} rows={rows} {...p}/></div>;}
-
 function Btn({children,v='pri',sx={},...p}){
-  const V={pri:{background:'#6c5ce7',color:'#fff',border:'none'},ghost:{background:'#F0EDFF',color:'#6c5ce7',border:'none'},gray:{background:'#F1F5F9',color:'#64748B',border:'none'},out:{background:'transparent',color:'#6c5ce7',border:'1.5px solid #6c5ce7'},amber:{background:'#FFFBEB',color:'#b45309',border:'1.5px solid #FDE68A'}};
+  const V={pri:{background:'#6c5ce7',color:'#fff',border:'none'},ghost:{background:'#F0EDFF',color:'#6c5ce7',border:'none'},gray:{background:'#F1F5F9',color:'#64748B',border:'none'},out:{background:'transparent',color:'#6c5ce7',border:'1.5px solid #6c5ce7'},amber:{background:'#FFFBEB',color:'#b45309',border:'1.5px solid #FDE68A'},red:{background:'#FEF2F2',color:'#EF4444',border:'none'}};
   return <button style={{display:'inline-flex',alignItems:'center',gap:6,borderRadius:12,padding:'10px 18px',fontSize:14,fontWeight:700,cursor:'pointer',transition:'opacity .15s',...(V[v]||V.pri),...sx}} {...p}>{children}</button>;
 }
 function Stars({value=0,onChange,size=18}){return <div style={{display:'flex',gap:2}}>{[1,2,3,4,5].map(i=><button key={i} onClick={()=>onChange?.(i)} style={{background:'none',border:'none',cursor:onChange?'pointer':'default',padding:1}}><svg width={size} height={size} viewBox="0 0 24 24"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" fill={i<=value?'#FBBF24':'none'} stroke={i<=value?'#FBBF24':'#D1D5DB'} strokeWidth="1.5" strokeLinejoin="round"/></svg></button>)}</div>;}
-
 function Modal({title,onClose,children}){return <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:'16px'}}><div style={{background:'#fff',width:'100%',maxWidth:480,borderRadius:20,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 20px 60px rgba(0,0,0,.2)'}}><div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 20px',borderBottom:'1.5px solid #F0EDFF',position:'sticky',top:0,background:'#fff'}}><span style={{fontWeight:800,fontSize:15,color:'#1a1a2e'}}>{title}</span><button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',color:'#bbb',fontSize:26,lineHeight:1,padding:4}}>×</button></div><div style={{padding:'16px 20px 40px'}}>{children}</div></div></div>;}
-
 function BackBtn({onClick}){return <button onClick={onClick} style={{display:'flex',alignItems:'center',gap:6,background:'none',border:'none',cursor:'pointer',color:'#6c5ce7',fontWeight:700,fontSize:14,padding:'0 0 16px',fontFamily:'inherit'}}>← 돌아가기</button>;}
 function Empty({emoji,title,sub}){return <div style={{textAlign:'center',padding:'52px 20px'}}><div style={{fontSize:44,marginBottom:10}}>{emoji}</div><div style={{fontWeight:700,color:'#374151',marginBottom:4}}>{title}</div><div style={{fontSize:13,color:'#9CA3AF'}}>{sub}</div></div>;}
 function ScoreBadge({score}){const c=score>0?'#6c5ce7':score<0?'#EF4444':'#94A3B8';const bg=score>0?'#F0EDFF':score<0?'#FEF2F2':'#F1F5F9';return <span style={{fontWeight:800,fontSize:12,color:c,background:bg,borderRadius:20,padding:'3px 10px'}}>{score>0?'+':''}{score}점</span>;}
 function VoteBreakdown({votes}){const cnt={};Object.values(votes||{}).forEach(v=>{cnt[v]=(cnt[v]||0)+1;});const items=VOPTS.filter(o=>cnt[o.k]);if(!items.length)return null;return <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>{items.map(o=><span key={o.k} style={{fontSize:11,background:o.bg,color:o.color,borderRadius:20,padding:'2px 8px',border:`1px solid ${o.border}`,fontWeight:700}}>{o.e} {cnt[o.k]}</span>)}</div>;}
-function InfoRow({icon,label,val}){return <div style={{display:'flex',gap:8,alignItems:'flex-start'}}><span style={{fontSize:16,flexShrink:0}}>{icon}</span><div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:1}}>{label}</div><div style={{fontSize:14,color:'#374151'}}>{val}</div></div></div>;}
+function InfoRow({icon,label,val}){return <div style={{display:'flex',gap:8,alignItems:'flex-start'}}><span style={{fontSize:16,flexShrink:0}}>{icon}</span><div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:1}}>{label}</div><div style={{fontSize:14,color:'#374151',lineHeight:1.5}}>{val}</div></div></div>;}
+
+/* ── PhotoUploadBtn ──────────────────────────────────────────── */
+function PhotoUploadBtn({onUpload,uploading,label='📷 사진 추가'}){
+  const ref=useRef();
+  async function handle(e){
+    const file=e.target.files[0];if(!file)return;
+    const url=await onUpload(file);
+    e.target.value='';
+    return url;
+  }
+  return(
+    <label style={{display:'inline-flex',alignItems:'center',gap:6,borderRadius:12,padding:'8px 16px',fontSize:13,fontWeight:700,cursor:'pointer',background:'#F0EDFF',color:'#6c5ce7',border:'none',userSelect:'none'}}>
+      {uploading?'⏳ 업로드 중...':label}
+      <input ref={ref} type="file" accept="image/*" style={{display:'none'}} onChange={handle} disabled={uploading}/>
+    </label>
+  );
+}
+
+/* ── PhotoGrid ───────────────────────────────────────────────── */
+function PhotoGrid({photos,onDelete}){
+  if(!photos||!photos.length)return null;
+  return(
+    <div className="photo-grid" style={{marginBottom:16}}>
+      {photos.map((url,i)=>(
+        <div key={i} style={{position:'relative',aspectRatio:'1',overflow:'hidden',borderRadius:12,background:'#f0f0f0'}}>
+          <img src={url} style={{width:'100%',height:'100%',objectFit:'cover',cursor:'pointer'}} onClick={()=>window.open(url,'_blank')} onError={e=>e.target.style.display='none'}/>
+          {onDelete&&<button onClick={()=>onDelete(i)} style={{position:'absolute',top:4,right:4,background:'rgba(0,0,0,.55)',border:'none',borderRadius:'50%',color:'#fff',width:22,height:22,cursor:'pointer',fontSize:13,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /* ── CandidateCard ───────────────────────────────────────────── */
 function CandidateCard({cand,onClick,myVote,rank}){
@@ -205,16 +247,13 @@ function CandidateDetail({cand,onUpdate,nick,onBack,inModal}){
         <div style={{fontWeight:800,fontSize:15,color:'#1a1a2e',marginBottom:2}}>이 클래스 어때요?</div>
         <div style={{fontSize:12,color:'#94A3B8',marginBottom:16}}>{totalVoters}명 참여</div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
-          {VOPTS.map(o=>{
-            const isMe=myVote===o.k;const cnt=Object.values(cand.votes||{}).filter(v=>v===o.k).length;
-            return(
-              <button key={o.k} onClick={()=>castVote(o.k)} style={{padding:'14px 10px',borderRadius:14,cursor:'pointer',fontFamily:'inherit',transition:'all .15s',border:isMe?`2px solid ${o.color}`:`1.5px solid ${o.border}`,background:isMe?o.bg:'#FAFAF8',display:'flex',flexDirection:'column',alignItems:'center',gap:5}}>
-                <span style={{fontSize:26}}>{o.e}</span>
-                <span style={{fontSize:11,fontWeight:800,color:isMe?o.color:'#374151',lineHeight:1.3,textAlign:'center'}}>{o.label}</span>
-                {cnt>0&&<span style={{fontSize:13,fontWeight:800,color:isMe?o.color:'#94A3B8'}}>{cnt}명</span>}
-              </button>
-            );
-          })}
+          {VOPTS.map(o=>{const isMe=myVote===o.k;const cnt=Object.values(cand.votes||{}).filter(v=>v===o.k).length;return(
+            <button key={o.k} onClick={()=>castVote(o.k)} style={{padding:'14px 10px',borderRadius:14,cursor:'pointer',fontFamily:'inherit',transition:'all .15s',border:isMe?`2px solid ${o.color}`:`1.5px solid ${o.border}`,background:isMe?o.bg:'#FAFAF8',display:'flex',flexDirection:'column',alignItems:'center',gap:5}}>
+              <span style={{fontSize:26}}>{o.e}</span>
+              <span style={{fontSize:11,fontWeight:800,color:isMe?o.color:'#374151',lineHeight:1.3,textAlign:'center'}}>{o.label}</span>
+              {cnt>0&&<span style={{fontSize:13,fontWeight:800,color:isMe?o.color:'#94A3B8'}}>{cnt}명</span>}
+            </button>
+          );})}
         </div>
         {Object.keys(cand.votes||{}).length>0&&(
           <div style={{background:'#FAFAF8',borderRadius:12,padding:'12px 14px'}}>
@@ -232,6 +271,8 @@ function RecordCard({rec,onClick}){
   const reviews=rec.reviews||[];
   const avg=reviews.length?(reviews.reduce((s,r)=>s+r.rating,0)/reviews.length).toFixed(1):null;
   const isStub=rec.isStub&&!rec.activity;
+  const photoCount=(rec.photos||[]).length;
+  const afterParties=getAfterParties(rec);
   return(
     <div onClick={onClick} style={{...CS,cursor:'pointer',borderColor:isStub?'#FDE68A':'#F0EDFF',background:isStub?'#FFFDF5':'#fff'}}>
       <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap',alignItems:'center'}}>
@@ -242,11 +283,12 @@ function RecordCard({rec,onClick}){
       <div style={{fontWeight:800,fontSize:16,color:'#1a1a2e',marginBottom:6}}>{rec.name}</div>
       {rec.date&&<div style={{fontSize:12,color:'#94A3B8',marginBottom:6}}>📅 {rec.date}</div>}
       {isStub
-        ?<div style={{fontSize:13,color:'#D97706'}}>클래스 후 활동내용·리뷰를 여기에 남겨주세요 →</div>
-        :<div style={{display:'flex',alignItems:'center',gap:14}}>
+        ?<div style={{fontSize:13,color:'#D97706'}}>클래스 후 활동내용·사진·리뷰를 여기에 남겨주세요 →</div>
+        :<div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
           {avg?<><span style={{color:'#FBBF24'}}>★</span><span style={{fontSize:14,fontWeight:700,color:'#374151'}}>{avg}</span><span style={{fontSize:12,color:'#bbb'}}>({reviews.length}개)</span></>:<span style={{fontSize:12,color:'#bbb'}}>리뷰 없음</span>}
           {rec.price>0&&<span style={{fontSize:12,color:'#64748B'}}>💰 {Number(rec.price).toLocaleString()}원</span>}
-          {(rec.afterPartyName||rec.afterPartyAddress)&&<span style={{fontSize:12,color:'#d97706'}}>🍻 2차</span>}
+          {photoCount>0&&<span style={{fontSize:12,color:'#6c5ce7'}}>📷 {photoCount}장</span>}
+          {afterParties.length>0&&<span style={{fontSize:12,color:'#d97706'}}>🍻 {afterParties.length}차 뒷풀이</span>}
         </div>
       }
     </div>
@@ -255,23 +297,75 @@ function RecordCard({rec,onClick}){
 
 /* ── RecordDetail ────────────────────────────────────────────── */
 function RecordDetail({rec,onUpdate,nick,onBack}){
-  const [showForm,setShowForm]=useState(false);
-  const [rf,setRf]=useState({nick:nick||'',rating:5,text:''});
+  const [uploadingPhoto,setUploadingPhoto]=useState(false);
+  const [showImpForm,setShowImpForm]=useState(false);
+  const [impForm,setImpForm]=useState({nick:nick||'',text:''});
+  const [showReviewForm,setShowReviewForm]=useState(false);
+  const [rf,setRf]=useState({nick:nick||'',rating:5,text:'',photo:null});
+  const [uploadingReviewPhoto,setUploadingReviewPhoto]=useState(false);
+
   const reviews=rec.reviews||[];
+  const impressions=rec.impressions||[];
+  const photos=rec.photos||[];
+  const afterParties=getAfterParties(rec);
   const avg=reviews.length?(reviews.reduce((s,r)=>s+r.rating,0)/reviews.length).toFixed(1):null;
 
+  function update(changes){onUpdate({...rec,...changes});}
+
+  // 활동 사진 업로드
+  async function handlePhotoUpload(file){
+    setUploadingPhoto(true);
+    const url=await uploadPhoto(file);
+    if(url) update({photos:[...photos,url]});
+    setUploadingPhoto(false);
+    return url;
+  }
+  function deletePhoto(i){
+    if(!confirm('이 사진을 삭제할까요?'))return;
+    update({photos:photos.filter((_,idx)=>idx!==i)});
+  }
+
+  // 소감 추가
+  function addImpression(){
+    if(!impForm.nick.trim()){alert('닉네임을 입력해주세요');return;}
+    if(!impForm.text.trim()){alert('소감을 작성해주세요');return;}
+    const imp={id:uid(),author:impForm.nick.trim(),text:impForm.text.trim(),createdAt:Date.now()};
+    update({impressions:[...impressions,imp]});
+    setShowImpForm(false);setImpForm(p=>({...p,text:''}));
+  }
+  function delImpression(id){if(!confirm('삭제할까요?'))return;update({impressions:impressions.filter(x=>x.id!==id)});}
+
+  // 리뷰 사진 업로드
+  async function handleReviewPhoto(file){
+    setUploadingReviewPhoto(true);
+    const url=await uploadPhoto(file);
+    if(url) setRf(p=>({...p,photo:url}));
+    setUploadingReviewPhoto(false);
+    return url;
+  }
+
+  // 리뷰 등록
   function addReview(){
     if(!rf.nick.trim()){alert('닉네임을 입력해주세요');return;}
     if(!rf.text.trim()){alert('리뷰를 작성해주세요');return;}
-    const rv={id:uid(),author:rf.nick.trim(),rating:rf.rating,text:rf.text.trim(),createdAt:Date.now()};
-    onUpdate({...rec,reviews:[...reviews,rv]});
-    setShowForm(false);setRf(p=>({...p,text:'',rating:5}));
+    const rv={id:uid(),author:rf.nick.trim(),rating:rf.rating,text:rf.text.trim(),photo:rf.photo||null,createdAt:Date.now()};
+    update({reviews:[...reviews,rv]});
+    setShowReviewForm(false);setRf(p=>({...p,text:'',rating:5,photo:null}));
   }
-  function delReview(id){if(!confirm('삭제할까요?'))return;onUpdate({...rec,reviews:reviews.filter(r=>r.id!==id)});}
+  function delReview(id){if(!confirm('삭제할까요?'))return;update({reviews:reviews.filter(r=>r.id!==id)});}
+
+  const secTitle=(t,sub)=>(
+    <div style={{marginBottom:14}}>
+      <div style={{fontWeight:800,fontSize:15,color:'#1a1a2e'}}>{t}</div>
+      {sub&&<div style={{fontSize:12,color:'#94A3B8',marginTop:2}}>{sub}</div>}
+    </div>
+  );
 
   return(
     <div>
       <BackBtn onClick={onBack}/>
+
+      {/* 기본 정보 */}
       <div style={{...CS,marginBottom:14}}>
         <div style={{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}}>
           <span style={{fontSize:12,background:'#6c5ce7',color:'#fff',borderRadius:20,padding:'3px 12px',fontWeight:700}}>{ymLabel(rec.month)}</span>
@@ -295,37 +389,86 @@ function RecordDetail({rec,onUpdate,nick,onBack}){
           )}
         </div>
       </div>
-      {(rec.afterPartyName||rec.afterPartyAddress)&&(
-        <div style={{background:'#FFFBEB',border:'1.5px solid #FDE68A',borderRadius:18,padding:'16px',marginBottom:14}}>
-          <div style={{fontWeight:800,fontSize:14,color:'#92400E',marginBottom:10}}>🍻 2차 뒷풀이</div>
-          {rec.afterPartyName&&<div style={{fontWeight:700,fontSize:15,color:'#374151',marginBottom:6}}>{rec.afterPartyName}</div>}
-          {rec.afterPartyAddress&&<div style={{fontSize:13,color:'#64748B',marginBottom:6}}>📍 {rec.afterPartyAddress}</div>}
-          {rec.afterPartyUrl&&<a href={rec.afterPartyUrl} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:13,color:'#03C75A',fontWeight:700,textDecoration:'none'}}>🗺️ 네이버 지도에서 보기</a>}
-        </div>
-      )}
-      <div style={CS}>
-        <div style={{fontWeight:800,fontSize:15,color:'#1a1a2e',marginBottom:2}}>💬 댓글 · 리뷰</div>
-        <div style={{fontSize:12,color:'#94A3B8',marginBottom:16}}>{reviews.length}개{avg?` · 평균 ★${avg}`:''}</div>
-        {reviews.length===0&&<div style={{fontSize:13,color:'#bbb',marginBottom:16}}>첫 번째 리뷰를 남겨보세요!</div>}
-        <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:14}}>
-          {reviews.map(rv=>(
-            <div key={rv.id} style={{background:'#FAFAF8',borderRadius:14,padding:'12px 14px',border:'1.5px solid #F0EDFF'}}>
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
-                <div style={{display:'flex',alignItems:'center',gap:8}}><span style={{fontWeight:800,fontSize:14,color:'#374151'}}>{rv.author}</span><Stars value={rv.rating} size={13}/></div>
-                <button onClick={()=>delReview(rv.id)} style={{background:'none',border:'none',cursor:'pointer',color:'#ddd',fontSize:20,lineHeight:1,padding:4}}>×</button>
-              </div>
-              <div style={{fontSize:14,color:'#4B5563',lineHeight:1.5}}>{rv.text}</div>
+
+      {/* 활동 사진 */}
+      <div style={{...CS,marginBottom:14}}>
+        {secTitle('📷 활동 사진',`${photos.length}장`)}
+        <PhotoGrid photos={photos} onDelete={deletePhoto}/>
+        <PhotoUploadBtn onUpload={handlePhotoUpload} uploading={uploadingPhoto}/>
+      </div>
+
+      {/* 뒷풀이 장소 */}
+      {afterParties.length>0&&(
+        <div style={{marginBottom:14}}>
+          {afterParties.map((p,i)=>(
+            <div key={p.id||i} style={{background:'#FFFBEB',border:'1.5px solid #FDE68A',borderRadius:16,padding:'14px 16px',marginBottom:10}}>
+              <div style={{fontWeight:800,fontSize:13,color:'#92400E',marginBottom:8}}>🍻 {i+1}차 뒷풀이</div>
+              {p.name&&<div style={{fontWeight:700,fontSize:15,color:'#374151',marginBottom:4}}>{p.name}</div>}
+              {p.address&&<div style={{fontSize:13,color:'#64748B',marginBottom:4}}>📍 {p.address}</div>}
+              {p.url&&<a href={p.url} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:13,color:'#03C75A',fontWeight:700,textDecoration:'none'}}>🗺️ 네이버 지도</a>}
             </div>
           ))}
         </div>
-        {showForm
-          ?<div style={{background:'#F0EDFF',borderRadius:14,padding:16,display:'flex',flexDirection:'column',gap:12}}>
+      )}
+
+      {/* 활동 소감 */}
+      <div style={{...CS,marginBottom:14}}>
+        {secTitle('💭 활동 소감',`${impressions.length}개 소감`)}
+        {impressions.length===0&&!showImpForm&&<div style={{fontSize:13,color:'#bbb',marginBottom:14}}>오늘 활동 어떠셨나요? 소감을 남겨주세요!</div>}
+        <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:14}}>
+          {impressions.map(imp=>(
+            <div key={imp.id} style={{background:'#F8F7FF',borderRadius:14,padding:'12px 14px',border:'1.5px solid #EDE8FF'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+                <span style={{fontWeight:800,fontSize:14,color:'#374151'}}>{imp.author}</span>
+                <button onClick={()=>delImpression(imp.id)} style={{background:'none',border:'none',cursor:'pointer',color:'#ddd',fontSize:20,lineHeight:1,padding:4}}>×</button>
+              </div>
+              <div style={{fontSize:14,color:'#4B5563',lineHeight:1.6}}>{imp.text}</div>
+            </div>
+          ))}
+        </div>
+        {showImpForm
+          ?<div style={{background:'#F0EDFF',borderRadius:14,padding:14,display:'flex',flexDirection:'column',gap:10}}>
+            <FI placeholder="닉네임" value={impForm.nick} onChange={e=>setImpForm(p=>({...p,nick:e.target.value}))}/>
+            <FT placeholder="오늘 활동 소감을 자유롭게 써주세요 ✍️" rows={3} value={impForm.text} onChange={e=>setImpForm(p=>({...p,text:e.target.value}))}/>
+            <div style={{display:'flex',gap:8}}><Btn sx={{flex:1,justifyContent:'center'}} onClick={addImpression}>등록</Btn><Btn v="gray" onClick={()=>setShowImpForm(false)}>취소</Btn></div>
+          </div>
+          :<Btn v="ghost" sx={{width:'100%',justifyContent:'center'}} onClick={()=>setShowImpForm(true)}>✏️ 소감 남기기</Btn>
+        }
+      </div>
+
+      {/* 리뷰 (별점) */}
+      <div style={CS}>
+        {secTitle('⭐ 리뷰',`${reviews.length}개${avg?` · 평균 ★${avg}`:''}`)}
+        {reviews.length===0&&!showReviewForm&&<div style={{fontSize:13,color:'#bbb',marginBottom:14}}>별점과 함께 리뷰를 남겨주세요!</div>}
+        <div style={{display:'flex',flexDirection:'column',gap:12,marginBottom:14}}>
+          {reviews.map(rv=>(
+            <div key={rv.id} style={{background:'#FAFAF8',borderRadius:14,padding:'12px 14px',border:'1.5px solid #F0EDFF'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <span style={{fontWeight:800,fontSize:14,color:'#374151'}}>{rv.author}</span>
+                  <Stars value={rv.rating} size={13}/>
+                </div>
+                <button onClick={()=>delReview(rv.id)} style={{background:'none',border:'none',cursor:'pointer',color:'#ddd',fontSize:20,lineHeight:1,padding:4}}>×</button>
+              </div>
+              <div style={{fontSize:14,color:'#4B5563',lineHeight:1.5,marginBottom:rv.photo?8:0}}>{rv.text}</div>
+              {rv.photo&&(
+                <img src={rv.photo} style={{width:'100%',maxHeight:200,objectFit:'cover',borderRadius:10,cursor:'pointer',marginTop:4}} onClick={()=>window.open(rv.photo,'_blank')}/>
+              )}
+            </div>
+          ))}
+        </div>
+        {showReviewForm
+          ?<div style={{background:'#F0EDFF',borderRadius:14,padding:14,display:'flex',flexDirection:'column',gap:12}}>
             <FI placeholder="닉네임" value={rf.nick} onChange={e=>setRf(p=>({...p,nick:e.target.value}))}/>
             <div><div style={{fontSize:12,fontWeight:700,color:'#6c5ce7',marginBottom:8}}>별점</div><Stars value={rf.rating} onChange={r=>setRf(p=>({...p,rating:r}))} size={28}/></div>
-            <FT placeholder="어떠셨나요? 솔직하게 남겨주세요 😊" value={rf.text} onChange={e=>setRf(p=>({...p,text:e.target.value}))}/>
-            <div style={{display:'flex',gap:10}}><Btn sx={{flex:1,justifyContent:'center'}} onClick={addReview}>등록</Btn><Btn v="gray" onClick={()=>setShowForm(false)}>취소</Btn></div>
+            <FT placeholder="이번 클래스 어떠셨나요? 😊" value={rf.text} onChange={e=>setRf(p=>({...p,text:e.target.value}))}/>
+            <div style={{display:'flex',alignItems:'center',gap:10}}>
+              <PhotoUploadBtn onUpload={handleReviewPhoto} uploading={uploadingReviewPhoto} label="📷 사진 첨부"/>
+              {rf.photo&&<div style={{position:'relative',width:56,height:56,borderRadius:10,overflow:'hidden',flexShrink:0}}><img src={rf.photo} style={{width:'100%',height:'100%',objectFit:'cover'}}/><button onClick={()=>setRf(p=>({...p,photo:null}))} style={{position:'absolute',top:2,right:2,background:'rgba(0,0,0,.5)',border:'none',borderRadius:'50%',color:'#fff',width:18,height:18,fontSize:11,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>×</button></div>}
+            </div>
+            <div style={{display:'flex',gap:8}}><Btn sx={{flex:1,justifyContent:'center'}} onClick={addReview}>등록</Btn><Btn v="gray" onClick={()=>setShowReviewForm(false)}>취소</Btn></div>
           </div>
-          :<Btn v="out" sx={{width:'100%',justifyContent:'center'}} onClick={()=>setShowForm(true)}>✏️ 리뷰 쓰기</Btn>
+          :<Btn v="out" sx={{width:'100%',justifyContent:'center'}} onClick={()=>setShowReviewForm(true)}>⭐ 리뷰 쓰기</Btn>
         }
       </div>
     </div>
@@ -336,24 +479,14 @@ function RecordDetail({rec,onUpdate,nick,onBack}){
 function AddCandidateModal({onAdd,onClose}){
   const [f,setF]=useState({name:'',cat:'',activity:'',price:'',address:'',naverUrl:'',addedBy:''});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));
-  function submit(){
-    if(!f.name.trim()){alert('클래스 이름을 입력해주세요');return;}
-    onAdd({id:uid(),...f,name:f.name.trim(),price:f.price?Number(String(f.price).replace(/,/g,'')):0,votes:{},addedAt:Date.now()});
-    onClose();
-  }
+  function submit(){if(!f.name.trim()){alert('클래스 이름을 입력해주세요');return;}onAdd({id:uid(),...f,name:f.name.trim(),price:f.price?Number(String(f.price).replace(/,/g,'')):0,votes:{},addedAt:Date.now()});onClose();}
   return(
     <Modal title="후보 추가하기" onClose={onClose}>
       <div style={{display:'flex',flexDirection:'column',gap:14}}>
         <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)} placeholder="예: 홍대 도자기 공방"/>
-        <div>
-          <div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>카테고리</div>
-          <div style={{display:'flex',flexWrap:'wrap',gap:6}}>{CATS.map(c=><button key={c} onClick={()=>set('cat',f.cat===c?'':c)} style={{border:'none',borderRadius:20,padding:'5px 12px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',background:f.cat===c?'#6c5ce7':'#F0EDFF',color:f.cat===c?'#fff':'#6c5ce7'}}>{CE[c]} {c}</button>)}</div>
-        </div>
+        <div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>카테고리</div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{CATS.map(c=><button key={c} onClick={()=>set('cat',f.cat===c?'':c)} style={{border:'none',borderRadius:20,padding:'5px 12px',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit',background:f.cat===c?'#6c5ce7':'#F0EDFF',color:f.cat===c?'#fff':'#6c5ce7'}}>{CE[c]} {c}</button>)}</div></div>
         <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)} placeholder="어떤 활동을 하는지 간단히 설명해주세요"/>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-          <FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} placeholder="45000" type="number"/>
-          <FI label="추가한 사람" value={f.addedBy} onChange={e=>set('addedBy',e.target.value)} placeholder="닉네임"/>
-        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}><FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} placeholder="45000" type="number"/><FI label="추가한 사람" value={f.addedBy} onChange={e=>set('addedBy',e.target.value)} placeholder="닉네임"/></div>
         <FI label="주소" value={f.address} onChange={e=>set('address',e.target.value)} placeholder="서울시 마포구 ..."/>
         <FI label="🗺️ 네이버 지도 링크" value={f.naverUrl} onChange={e=>set('naverUrl',e.target.value)} placeholder="https://naver.me/..."/>
         <div style={{display:'flex',gap:10,marginTop:4}}><Btn sx={{flex:1,justifyContent:'center'}} onClick={submit}>추가하기</Btn><Btn v="gray" onClick={onClose}>취소</Btn></div>
@@ -366,72 +499,75 @@ function AddCandidateModal({onAdd,onClose}){
 function AddRecordModal({candidates,onAdd,onClose}){
   const now=new Date();
   const initDate=()=>{const d=nthWkday(now.getFullYear(),now.getMonth(),3,2);return d?fDate(d):'';};
-  const [f,setF]=useState({candId:'',name:'',cat:'',month:toYM(now),date:initDate(),activity:'',price:'',address:'',naverUrl:'',afterPartyName:'',afterPartyAddress:'',afterPartyUrl:''});
+  const [f,setF]=useState({candId:'',name:'',cat:'',month:toYM(now),date:initDate(),activity:'',price:'',address:'',naverUrl:''});
+  const [afterParties,setAfterParties]=useState([]);
   const set=(k,v)=>setF(p=>({...p,[k]:v}));
+
   function selectCand(cid){
     const c=candidates.find(x=>x.id===cid);
     if(c) setF(p=>({...p,candId:cid,name:c.name,cat:c.cat||'',activity:c.activity||'',price:c.price?String(c.price):'',address:c.address||'',naverUrl:c.naverUrl||''}));
     else set('candId',cid);
   }
-  function onMonthChange(ym){
-    set('month',ym);
-    if(ym){const[y,m]=ym.split('-').map(Number);const d=nthWkday(y,m-1,3,2);if(d)set('date',fDate(d));}
-  }
+  function onMonthChange(ym){set('month',ym);if(ym){const[y,m]=ym.split('-').map(Number);const d=nthWkday(y,m-1,3,2);if(d)set('date',fDate(d));}}
+  function addParty(){setAfterParties(p=>[...p,{id:uid(),name:'',address:'',url:''}]);}
+  function removeParty(id){setAfterParties(p=>p.filter(x=>x.id!==id));}
+  function updateParty(id,k,v){setAfterParties(p=>p.map(x=>x.id===id?{...x,[k]:v}:x));}
+
   function submit(){
     if(!f.name.trim()){alert('클래스 이름을 입력해주세요');return;}
-    onAdd({id:uid(),...f,name:f.name.trim(),price:f.price?Number(String(f.price).replace(/,/g,'')):0,reviews:[],createdAt:Date.now()});
+    onAdd({id:uid(),...f,name:f.name.trim(),price:f.price?Number(String(f.price).replace(/,/g,'')):0,afterParties,photos:[],impressions:[],reviews:[],createdAt:Date.now()});
     onClose();
   }
   return(
     <Modal title="기록 추가하기" onClose={onClose}>
       <div style={{display:'flex',flexDirection:'column',gap:14}}>
-        <div>
-          <label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>후보에서 불러오기 (선택)</label>
-          <select value={f.candId} onChange={e=>selectCand(e.target.value)} style={{...IS,color:f.candId?'#1a1a2e':'#9CA3AF'}}>
-            <option value="">직접 입력</option>
-            {candidates.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </div>
+        <div><label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>후보에서 불러오기 (선택)</label><select value={f.candId} onChange={e=>selectCand(e.target.value)} style={{...IS,color:f.candId?'#1a1a2e':'#9CA3AF'}}><option value="">직접 입력</option>{candidates.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
         <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)} placeholder="예: 홍대 도자기 공방"/>
-        <div>
-          <div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>카테고리</div>
-          <div style={{display:'flex',flexWrap:'wrap',gap:6}}>{CATS.map(c=><button key={c} onClick={()=>set('cat',f.cat===c?'':c)} style={{border:'none',borderRadius:20,padding:'4px 11px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'inherit',background:f.cat===c?'#6c5ce7':'#F0EDFF',color:f.cat===c?'#fff':'#6c5ce7'}}>{CE[c]} {c}</button>)}</div>
-        </div>
+        <div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>카테고리</div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{CATS.map(c=><button key={c} onClick={()=>set('cat',f.cat===c?'':c)} style={{border:'none',borderRadius:20,padding:'4px 11px',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:'inherit',background:f.cat===c?'#6c5ce7':'#F0EDFF',color:f.cat===c?'#fff':'#6c5ce7'}}>{CE[c]} {c}</button>)}</div></div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
           <div><label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:6}}>진행 월</label><input type="month" value={f.month} onChange={e=>onMonthChange(e.target.value)} style={IS}/></div>
           <FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} placeholder="45000" type="number"/>
         </div>
         <FI label="날짜" value={f.date} onChange={e=>set('date',e.target.value)} placeholder="자동입력 (수정 가능)"/>
-        <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)} placeholder="어떤 활동을 했는지 적어주세요" rows={4}/>
+        <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)} placeholder="어떤 활동을 했는지 적어주세요" rows={3}/>
         <FI label="주소" value={f.address} onChange={e=>set('address',e.target.value)} placeholder="서울시 마포구 ..."/>
         <FI label="🗺️ 클래스 네이버 지도 링크" value={f.naverUrl} onChange={e=>set('naverUrl',e.target.value)} placeholder="https://naver.me/..."/>
-        <div style={{background:'#FFFBEB',border:'1.5px solid #FDE68A',borderRadius:14,padding:14}}>
-          <div style={{fontWeight:700,fontSize:13,color:'#92400E',marginBottom:12}}>🍻 2차 뒷풀이 (선택)</div>
-          <div style={{display:'flex',flexDirection:'column',gap:10}}>
-            <FI label="장소 이름" value={f.afterPartyName} onChange={e=>set('afterPartyName',e.target.value)} placeholder="예: 이자카야 도란도란"/>
-            <FI label="주소" value={f.afterPartyAddress} onChange={e=>set('afterPartyAddress',e.target.value)} placeholder="서울시 마포구 ..."/>
-            <FI label="🗺️ 네이버 지도 링크" value={f.afterPartyUrl} onChange={e=>set('afterPartyUrl',e.target.value)} placeholder="https://naver.me/..."/>
+
+        {/* 뒷풀이 (개수 제한 없음) */}
+        <div style={{border:'1.5px solid #FDE68A',borderRadius:14,padding:14,background:'#FFFBEB'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+            <div style={{fontWeight:700,fontSize:13,color:'#92400E'}}>🍻 뒷풀이 장소</div>
+            <Btn v="amber" sx={{padding:'5px 12px',fontSize:12}} onClick={addParty}>+ 추가</Btn>
           </div>
+          {afterParties.length===0&&<div style={{fontSize:12,color:'#bbb'}}>추가 버튼을 눌러 1차, 2차, 3차 장소를 추가하세요</div>}
+          {afterParties.map((p,i)=>(
+            <div key={p.id} style={{background:'#fff',borderRadius:10,padding:12,marginBottom:8,border:'1px solid #FDE68A'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+                <span style={{fontSize:12,fontWeight:700,color:'#92400E'}}>{i+1}차 뒷풀이</span>
+                <button onClick={()=>removeParty(p.id)} style={{background:'none',border:'none',cursor:'pointer',color:'#ccc',fontSize:18,lineHeight:1}}>×</button>
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                <FI placeholder="장소 이름" value={p.name} onChange={e=>updateParty(p.id,'name',e.target.value)}/>
+                <FI placeholder="주소" value={p.address} onChange={e=>updateParty(p.id,'address',e.target.value)}/>
+                <FI placeholder="🗺️ 네이버 지도 링크" value={p.url} onChange={e=>updateParty(p.id,'url',e.target.value)}/>
+              </div>
+            </div>
+          ))}
         </div>
+
         <div style={{display:'flex',gap:10,marginTop:4}}><Btn sx={{flex:1,justifyContent:'center'}} onClick={submit}>저장하기</Btn><Btn v="gray" onClick={onClose}>취소</Btn></div>
       </div>
     </Modal>
   );
 }
 
-/* ── NicknameModal (첫 방문 or 수정) ────────────────────────── */
+/* ── NicknameModal ───────────────────────────────────────────── */
 function NicknameModal({current,onSave,isFirst}){
   const [val,setVal]=useState(current||'');
-  function save(){
-    const v=val.trim();
-    if(!v){alert('닉네임을 입력해주세요');return;}
-    saveNick(v);onSave(v);
-  }
+  function save(){const v=val.trim();if(!v){alert('닉네임을 입력해주세요');return;}saveNick(v);onSave(v);}
   return(
     <Modal title={isFirst?'👋 반가워요!':'닉네임 변경'} onClose={isFirst?null:()=>onSave(current)}>
-      <p style={{fontSize:14,color:'#64748B',marginBottom:16,lineHeight:1.6}}>
-        {isFirst?'투표하고 리뷰를 남길 때 표시될 닉네임을 설정해주세요.\n이 기기에 저장되며 언제든 바꿀 수 있어요.':'새 닉네임을 입력하세요.'}
-      </p>
+      <p style={{fontSize:14,color:'#64748B',marginBottom:16,lineHeight:1.6}}>{isFirst?'투표하고 소감·리뷰를 남길 때 표시될 닉네임을 설정해주세요. 이 기기에 저장돼요!':'새 닉네임을 입력하세요.'}</p>
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
         <FI placeholder="닉네임 (예: 다은, 민지언니)" value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>e.key==='Enter'&&save()} autoFocus/>
         <Btn sx={{width:'100%',justifyContent:'center'}} onClick={save}>{isFirst?'시작하기':'저장'}</Btn>
@@ -449,10 +585,8 @@ function HomeTab({candidates,records,confirmed,onConfirm,nick,onCandClick}){
   const confirmedId=confirmed[nextYM];
   const confirmedCand=confirmedId?candidates.find(c=>c.id===confirmedId):null;
   const sorted=[...candidates].sort((a,b)=>calcScore(b)-calcScore(a));
-
   return(
     <div className="home-grid">
-      {/* 다가오는 클래스 */}
       <div>
         <div style={{fontWeight:800,fontSize:16,color:'#1a1a2e',marginBottom:4}}>📅 다가오는 원데이클래스</div>
         <div style={{fontSize:12,color:'#94A3B8',marginBottom:12}}>{fDate(nextDate)}</div>
@@ -463,29 +597,15 @@ function HomeTab({candidates,records,confirmed,onConfirm,nick,onCandClick}){
               <div style={{fontSize:11,color:'#6c5ce7',fontWeight:700,marginTop:2}}>일 후</div>
             </div>
             <div style={{flex:1}}>
-              {confirmedCand?(
-                <><div style={{fontSize:11,color:'#03C75A',fontWeight:700,marginBottom:4}}>✅ 확정됨</div>
-                <div style={{fontWeight:800,fontSize:17,color:'#1a1a2e'}}>{confirmedCand.name}</div>
-                {confirmedCand.cat&&<span style={{fontSize:11,background:'#F0EDFF',color:'#6c5ce7',borderRadius:20,padding:'2px 8px',fontWeight:600,display:'inline-block',marginTop:4}}>{CE[confirmedCand.cat]} {confirmedCand.cat}</span>}</>
-              ):(
-                <><div style={{fontSize:11,color:'#F59E0B',fontWeight:700,marginBottom:4}}>⏳ 미확정</div>
-                <div style={{fontWeight:700,fontSize:15,color:'#94A3B8'}}>아직 클래스가 결정되지 않았어요</div></>
-              )}
+              {confirmedCand
+                ?<><div style={{fontSize:11,color:'#03C75A',fontWeight:700,marginBottom:4}}>✅ 확정됨</div><div style={{fontWeight:800,fontSize:17,color:'#1a1a2e'}}>{confirmedCand.name}</div>{confirmedCand.cat&&<span style={{fontSize:11,background:'#F0EDFF',color:'#6c5ce7',borderRadius:20,padding:'2px 8px',fontWeight:600,display:'inline-block',marginTop:4}}>{CE[confirmedCand.cat]} {confirmedCand.cat}</span>}</>
+                :<><div style={{fontSize:11,color:'#F59E0B',fontWeight:700,marginBottom:4}}>⏳ 미확정</div><div style={{fontWeight:700,fontSize:15,color:'#94A3B8'}}>아직 클래스가 결정되지 않았어요</div></>
+              }
             </div>
           </div>
-          {confirmedCand&&(
-            <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:12}}>
-              {confirmedCand.activity&&<div style={{fontSize:13,color:'#64748B',background:'#FAFAF8',borderRadius:10,padding:'8px 12px'}}>📝 {confirmedCand.activity}</div>}
-              {confirmedCand.price>0&&<div style={{fontSize:13,color:'#64748B'}}>💰 {Number(confirmedCand.price).toLocaleString()}원/인</div>}
-              {confirmedCand.address&&<div style={{fontSize:13,color:'#64748B'}}>📍 {confirmedCand.address}</div>}
-              {confirmedCand.naverUrl&&<a href={confirmedCand.naverUrl} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'#03C75A',fontWeight:700,textDecoration:'none'}}>🗺️ 네이버 지도</a>}
-            </div>
-          )}
-          <Btn onClick={()=>setShowSelect(true)} v={confirmedCand?'ghost':'pri'} sx={{width:'100%',justifyContent:'center'}}>
-            {confirmedCand?'클래스 변경하기':'후보 목록에서 선택하기'}
-          </Btn>
+          {confirmedCand&&<div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:12}}>{confirmedCand.activity&&<div style={{fontSize:13,color:'#64748B',background:'#FAFAF8',borderRadius:10,padding:'8px 12px'}}>📝 {confirmedCand.activity}</div>}{confirmedCand.price>0&&<div style={{fontSize:13,color:'#64748B'}}>💰 {Number(confirmedCand.price).toLocaleString()}원/인</div>}{confirmedCand.address&&<div style={{fontSize:13,color:'#64748B'}}>📍 {confirmedCand.address}</div>}{confirmedCand.naverUrl&&<a href={confirmedCand.naverUrl} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'#03C75A',fontWeight:700,textDecoration:'none'}}>🗺️ 네이버 지도</a>}</div>}
+          <Btn onClick={()=>setShowSelect(true)} v={confirmedCand?'ghost':'pri'} sx={{width:'100%',justifyContent:'center'}}>{confirmedCand?'클래스 변경하기':'후보 목록에서 선택하기'}</Btn>
         </div>
-
         {showSelect&&(
           <Modal title="이달 클래스 확정하기" onClose={()=>setShowSelect(false)}>
             <div style={{fontSize:13,color:'#64748B',marginBottom:14}}>점수 순으로 정렬되어 있어요</div>
@@ -493,10 +613,7 @@ function HomeTab({candidates,records,confirmed,onConfirm,nick,onCandClick}){
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
               {sorted.map(c=>(
                 <button key={c.id} onClick={()=>{onConfirm(nextYM,c.id);setShowSelect(false);}} style={{background:confirmedId===c.id?'#F0EDFF':'#FAFAF8',border:`1.5px solid ${confirmedId===c.id?'#6c5ce7':'#F0EDFF'}`,borderRadius:14,padding:'12px 16px',cursor:'pointer',textAlign:'left',fontFamily:'inherit'}}>
-                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-                    <span style={{fontWeight:700,fontSize:14,color:'#1a1a2e'}}>{c.name}</span>
-                    <div style={{display:'flex',alignItems:'center',gap:8}}><ScoreBadge score={calcScore(c)}/>{confirmedId===c.id&&<span style={{color:'#6c5ce7'}}>✓</span>}</div>
-                  </div>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><span style={{fontWeight:700,fontSize:14,color:'#1a1a2e'}}>{c.name}</span><div style={{display:'flex',alignItems:'center',gap:8}}><ScoreBadge score={calcScore(c)}/>{confirmedId===c.id&&<span style={{color:'#6c5ce7'}}>✓</span>}</div></div>
                   {c.price>0&&<div style={{fontSize:12,color:'#64748B',marginTop:3}}>💰 {Number(c.price).toLocaleString()}원</div>}
                 </button>
               ))}
@@ -504,8 +621,6 @@ function HomeTab({candidates,records,confirmed,onConfirm,nick,onCandClick}){
           </Modal>
         )}
       </div>
-
-      {/* 다음달 투표 */}
       <div>
         <div style={{fontWeight:800,fontSize:16,color:'#1a1a2e',marginBottom:4}}>🗳️ 다음달 원데이클래스 투표</div>
         <div style={{fontSize:12,color:'#94A3B8',marginBottom:12}}>점수 높은 순 · 탭해서 투표하세요</div>
@@ -577,21 +692,10 @@ function App(){
   const [editNick,setEditNick]=useState(false);
   const [candModal,setCandModal]=useState(null);
 
-  // 초기 로드 + 실시간 동기화 (Firebase)
   useEffect(()=>{
-    async function init(){
-      const data=await fbGet();
-      setCandidates(data.candidates||[]);
-      setRecords(data.records||[]);
-      setConfirmed(data.confirmed||{});
-      setLoading(false);
-    }
+    async function init(){const data=await fbGet();setCandidates(data.candidates||[]);setRecords(data.records||[]);setConfirmed(data.confirmed||{});setLoading(false);}
     init();
-    const unsub=fbListen(data=>{
-      if(data.candidates) setCandidates(data.candidates);
-      if(data.records)    setRecords(data.records);
-      if(data.confirmed)  setConfirmed(data.confirmed);
-    });
+    const unsub=fbListen(data=>{if(data.candidates)setCandidates(data.candidates);if(data.records)setRecords(data.records);if(data.confirmed)setConfirmed(data.confirmed);});
     return unsub;
   },[]);
 
@@ -600,31 +704,20 @@ function App(){
   async function saveConf(data){setConfirmed(data);await fbSet('confirmed',data);}
 
   async function confirmClass(ym,candId){
-    const newConf={...confirmed,[ym]:candId};
-    await saveConf(newConf);
-    // 기록 자동 생성
-    const cand=candidates.find(c=>c.id===candId);
-    if(!cand)return;
-    const[y,m]=ym.split('-').map(Number);
-    const d=nthWkday(y,m-1,3,2);
-    const dateStr=d?fDate(d):'';
+    const newConf={...confirmed,[ym]:candId};await saveConf(newConf);
+    const cand=candidates.find(c=>c.id===candId);if(!cand)return;
+    const[y,m]=ym.split('-').map(Number);const d=nthWkday(y,m-1,3,2);const dateStr=d?fDate(d):'';
     const stubIdx=records.findIndex(r=>r.month===ym&&r.isStub);
     const hasReal=records.some(r=>r.month===ym&&!r.isStub);
     if(stubIdx>=0){
-      const next=[...records];
-      next[stubIdx]={...next[stubIdx],name:cand.name,cat:cand.cat||'',date:dateStr,price:cand.price||0,address:cand.address||'',naverUrl:cand.naverUrl||''};
-      await saveRecs(next);
+      const next=[...records];next[stubIdx]={...next[stubIdx],name:cand.name,cat:cand.cat||'',date:dateStr,price:cand.price||0,address:cand.address||'',naverUrl:cand.naverUrl||''};await saveRecs(next);
     } else if(!hasReal){
-      const stub={id:uid(),month:ym,candId,name:cand.name,cat:cand.cat||'',date:dateStr,activity:'',price:cand.price||0,address:cand.address||'',naverUrl:cand.naverUrl||'',afterPartyName:'',afterPartyAddress:'',afterPartyUrl:'',reviews:[],isStub:true,createdAt:Date.now()};
+      const stub={id:uid(),month:ym,candId,name:cand.name,cat:cand.cat||'',date:dateStr,activity:'',price:cand.price||0,address:cand.address||'',naverUrl:cand.naverUrl||'',afterParties:[],photos:[],impressions:[],reviews:[],isStub:true,createdAt:Date.now()};
       await saveRecs([...records,stub]);
     }
   }
 
-  function handleNickSave(v){
-    setNick(v);
-    setShowNickModal(false);
-    setEditNick(false);
-  }
+  function handleNickSave(v){setNick(v);setShowNickModal(false);setEditNick(false);}
 
   if(loading)return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'#bbb',fontSize:14}}>불러오는 중...</div>;
 
@@ -632,40 +725,23 @@ function App(){
 
   return(
     <div style={{minHeight:'100vh',background:'#F5F4EF'}}>
-      {/* 상단 네비 */}
       <div className="nav-wrap">
         <div className="nav-inner">
           <span className="nav-title">🎨 원데이클래스 동아리</span>
-          <button className="nav-nick" onClick={()=>setEditNick(true)}>
-            {nick?<>👤 {nick} <span style={{fontSize:11,opacity:.7}}>수정</span></>:<span style={{color:'#F59E0B'}}>👤 닉네임 설정</span>}
-          </button>
+          <button className="nav-nick" onClick={()=>setEditNick(true)}>{nick?<>👤 {nick} <span style={{fontSize:11,opacity:.7}}>수정</span></>:<span style={{color:'#F59E0B'}}>👤 닉네임 설정</span>}</button>
         </div>
-        <div className="nav-tabs">
-          {TABS.map(t=><button key={t.id} className={`nav-tab${tab===t.id?' active':''}`} onClick={()=>setTab(t.id)}>{t.l}</button>)}
-        </div>
+        <div className="nav-tabs">{TABS.map(t=><button key={t.id} className={`nav-tab${tab===t.id?' active':''}`} onClick={()=>setTab(t.id)}>{t.l}</button>)}</div>
       </div>
-
-      {/* 본문 */}
       <div className="main">
         {tab==='home'&&<HomeTab candidates={candidates} records={records} confirmed={confirmed} onConfirm={confirmClass} nick={nick} onCandClick={c=>setCandModal(c)}/>}
         {tab==='records'&&<RecordsTab records={records} candidates={candidates} onSave={saveRecs} nick={nick}/>}
         {tab==='candidates'&&<CandidatesTab candidates={candidates} onSave={saveCands} nick={nick}/>}
       </div>
-
-      {/* 닉네임 모달 (첫 방문) */}
       {(showNickModal||editNick)&&<NicknameModal current={nick} onSave={handleNickSave} isFirst={showNickModal&&!editNick}/>}
-
-      {/* 홈 후보 퀵뷰 모달 */}
       {candModal&&(
         <Modal title={candModal.name} onClose={()=>setCandModal(null)}>
           {!nick&&<div style={{background:'#FEF3C7',borderRadius:12,padding:'10px 14px',marginBottom:16,fontSize:13,color:'#92400E'}}>⚠️ 투표하려면 우측 상단에서 닉네임을 설정해주세요</div>}
-          <CandidateDetail
-            cand={candidates.find(c=>c.id===candModal.id)||candModal}
-            nick={nick}
-            inModal
-            onUpdate={async u=>{await saveCands(candidates.map(c=>c.id===u.id?u:c));setCandModal(u);}}
-            onBack={()=>setCandModal(null)}
-          />
+          <CandidateDetail cand={candidates.find(c=>c.id===candModal.id)||candModal} nick={nick} inModal onUpdate={async u=>{await saveCands(candidates.map(c=>c.id===u.id?u:c));setCandModal(u);}} onBack={()=>setCandModal(null)}/>
         </Modal>
       )}
     </div>
