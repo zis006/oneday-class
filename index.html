@@ -488,8 +488,9 @@ function HomeTab({candidates,records,confirmed,nick,go}){
   // 지난 원데이 클래스: 오늘 이전의 가장 최근 기록
   const past=[...records].filter(r=>!r.isStub||getImpressions(r).length>0).sort((a,b)=>recDateKey(b).localeCompare(recDateKey(a)))[0]
     ||[...records].sort((a,b)=>recDateKey(b).localeCompare(recDateKey(a)))[0];
-  const pastImps=past?getImpressions(past):[];
-  const latestImp=pastImps[0];
+  // 홈에는 "내가" 남긴 소감만 노출
+  const myImps=past?getImpressions(past).filter(i=>nick&&i.author===nick):[];
+  const latestImp=myImps[0];
 
   return(
     <div className="home-grid">
@@ -507,7 +508,7 @@ function HomeTab({candidates,records,confirmed,nick,go}){
             <div style={{fontSize:17,fontWeight:800,color:'#1B1B22',margin:'8px 0 10px'}}>아직 클래스가 결정되지 않았어요</div>
             <div style={{fontSize:14,color:'#5A5A66'}}>{fmtDot(nextDate)}</div>
             <div style={{fontSize:14,color:'#5A5A66',marginTop:2}}>{days}일 후</div>
-            <Btn v="dark" sx={{width:'100%',marginTop:14}} onClick={()=>go({t:'candidates'})}>후보 목록에서 선택하기</Btn>
+            <Btn sx={{width:'100%',marginTop:14}} onClick={()=>go({t:'candidates'})}>후보 목록에서 선택하기</Btn>
           </React.Fragment>}
         </div>
       </div>
@@ -517,7 +518,7 @@ function HomeTab({candidates,records,confirmed,nick,go}){
         <div className="sec-h"><span className="sec-t">다음달 원데이 클래스 투표 현황</span></div>
         {top3.length===0
           ?<div style={CS}><Empty title="활동 후보가 없어요." sub="체험하고 싶은 클래스 후보를 등록해주세요."
-              action={<Btn v="dark" sx={{width:'100%'}} onClick={()=>go({t:'candidates',add:true})}>클래스 추가하기</Btn>}/></div>
+              action={<Btn sx={{width:'100%'}} onClick={()=>go({t:'candidates',add:true})}>클래스 추가하기</Btn>}/></div>
           :<div style={{display:'flex',flexDirection:'column',gap:10}}>
             {top3.map((c,i)=>(
               <div key={c.id} onClick={()=>go({t:'cand',id:c.id})} style={{...CS,cursor:'pointer',display:'flex',alignItems:'center',gap:14}}>
@@ -538,7 +539,7 @@ function HomeTab({candidates,records,confirmed,nick,go}){
         <div className="sec-h"><span className="sec-t">지난 원데이 클래스 활동 소감</span></div>
         {!past
           ?<div style={CS}><Empty title="아직 다녀온 클래스가 없어요." sub="첫 활동을 기록해보세요!"
-              action={<Btn v="dark" sx={{width:'100%'}} onClick={()=>go({t:'records'})}>기록하러 가기</Btn>}/></div>
+              action={<Btn sx={{width:'100%'}} onClick={()=>go({t:'records'})}>기록하러 가기</Btn>}/></div>
           :<div style={CS}>
             <Chip cat={past.cat}/>
             <div style={{fontSize:15,fontWeight:700,color:'#1B1B22',marginTop:6}}>{past.name}</div>
@@ -546,7 +547,7 @@ function HomeTab({candidates,records,confirmed,nick,go}){
             {latestImp
               ?<ImpressionItem imp={latestImp} nick={nick} compact/>
               :<Empty title="아직 소감을 남기지 않으셨네요!" sub="소감을 공유해 주세요"
-                 action={<Btn v="dark" sx={{width:'100%'}} onClick={()=>go({t:'record',id:past.id})}>소감 남기러 가기</Btn>}/>}
+                 action={<Btn sx={{width:'100%'}} onClick={()=>go({t:'record',id:past.id,imp:true})}>소감 남기러 가기</Btn>}/>}
           </div>}
       </div>
     </div>
@@ -589,7 +590,7 @@ function RecordsTab({records,candidates,onSave,go,openAdd,onAddClosed}){
                     <span>⭐ 별점 : {avg||'0.0'}</span>
                   </div>
                 </div>
-                {imps.length===0&&<Btn v="dark" sx={{width:'100%',marginTop:14}} onClick={()=>go({t:'record',id:r.id,imp:true})}>소감 남기기</Btn>}
+                {imps.length===0&&<Btn sx={{width:'100%',marginTop:14}} onClick={()=>go({t:'record',id:r.id,imp:true})}>소감 남기기</Btn>}
               </div>
             );
           })}
@@ -728,7 +729,7 @@ function RecordDetail({rec,onUpdate,nick,openImp}){
         <PartyEditor p={partyDraft} index={afterParties.length+1} onChange={setPartyDraft}/>
         <div style={{display:'flex',gap:8,marginTop:8}}><Btn sx={{flex:1}} onClick={saveParty}>추가</Btn><Btn v="gray" onClick={()=>setPartyDraft(null)}>취소</Btn></div>
       </div>}
-      {!partyDraft&&<Btn v="dark" sx={{width:'100%',marginTop:4}} onClick={()=>setPartyDraft(newParty())}>+ 뒷풀이 장소 추가</Btn>}
+      {!partyDraft&&<Btn sx={{width:'100%',marginTop:4}} onClick={()=>setPartyDraft(newParty())}>+ 뒷풀이 장소 추가</Btn>}
 
       {showEdit&&<EditRecordModal rec={rec} onSave={u=>{onUpdate(u);setShowEdit(false);}} onClose={()=>setShowEdit(false)}/>}
     </React.Fragment>
@@ -766,7 +767,7 @@ function CandidatesTab({candidates,confirmed,onSave,go,openAdd,onAddClosed}){
           </div>}
       </div>
       <div className="sticky-add">
-        <Btn v="dark" sx={{width:'100%'}} onClick={()=>setShowAdd(true)}>+ 추가</Btn>
+        <Btn sx={{width:'100%'}} onClick={()=>setShowAdd(true)}>+ 추가</Btn>
       </div>
       {showAdd&&<AddCandidateModal onAdd={c=>onSave([...candidates,c])} onClose={()=>setShowAdd(false)}/>}
     </div>
