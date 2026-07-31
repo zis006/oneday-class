@@ -321,6 +321,20 @@ async function fetchPlaceInfo(url){
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const WD=['일','월','화','수','목','금','토'];
 const NICK_MAX=10;   // 닉네임 길이 제한 (공백 포함)
+
+/* ── 회원 등급 ────────────────────────────────────────────────
+   정회원 : 모든 기능
+   객원멤버: 조회 + 활동 소감 좋아요만. 단, 초대받은 달에는 그 달 소감 작성 가능
+   등급 도입 시점에 이미 가입해 있던 사람은 전부 정회원으로 승계된다. */
+const ROLE_MEMBER='member', ROLE_GUEST='guest';
+const ADMIN_EMAILS=['yjs951008@gmail.com'];   // 등급을 바꿀 수 있는 운영자
+
+const isAdmin   = me => !!me && ADMIN_EMAILS.includes(String(me.email||'').toLowerCase());
+const isMember  = me => !!me && me.role===ROLE_MEMBER;
+const invitesOf = me => (me&&me.invites)||[];
+// 객원멤버는 초대받은 달의 기록에만 소감을 쓸 수 있다
+const canWriteImp = (me,rec) => isMember(me) || (!!rec && invitesOf(me).includes(rec.month));
+const roleLabel = me => isMember(me)?'정회원':'객원멤버';
 const CATS=['도예','요리','베이킹','공예','그림','플라워','캘리','가죽','기타'];
 const CE={도예:'🏺',요리:'🍳',베이킹:'🥐',공예:'✂️',그림:'🎨',플라워:'💐',캘리:'✒️',가죽:'👜',기타:'✨'};
 
@@ -437,21 +451,27 @@ function Avatar({src,size=22}){
   if(src&&!broken) return <img src={src} style={{...base,background:'#EDEDF0'}} onError={()=>setBroken(true)}/>;
   return <span style={{...base,background:'#EDEDF0',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:Math.round(size*0.5)}}>👤</span>;
 }
-function MemberBadge({sx={}}){
-  return <span style={{display:'inline-flex',alignItems:'center',gap:3,background:'#F1EFFE',color:'#6C5CE7',borderRadius:20,padding:'3px 9px',fontSize:11,fontWeight:800,flexShrink:0,...sx}}>✦ 정회원</span>;
+function MemberBadge({role=ROLE_MEMBER,sx={}}){
+  const on=role===ROLE_MEMBER;
+  return <span style={{display:'inline-flex',alignItems:'center',gap:3,flexShrink:0,borderRadius:20,padding:'3px 9px',fontSize:11,fontWeight:800,
+    background:on?'#F1EFFE':'#F1F1F5',color:on?'#6C5CE7':'#8A8A96',...sx}}>{on?'✦ 정회원':'객원멤버'}</span>;
 }
-/* 소감·한줄평 작성자 표시 (프로필 사진 + 닉네임 + 정회원 뱃지) */
+/* 소감·한줄평 작성자 표시 (프로필 사진 + 닉네임 + 등급 뱃지) */
 function UserLine({uid,fallbackName,profiles,size=22}){
-  const isMember=!!(uid&&(profiles||{})[uid]);   // 프로필이 있으면 가입한 정회원
+  const p=uid&&(profiles||{})[uid];
   return(
     <div style={{display:'flex',alignItems:'center',gap:7,minWidth:0}}>
       <Avatar src={photoOf(profiles,uid)} size={size}/>
       <span style={{fontSize:13,fontWeight:700,color:'#3A3A44',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
         {nameOf(profiles,uid,fallbackName)}
       </span>
-      {isMember&&<MemberBadge sx={{fontSize:10,padding:'2px 7px'}}/>}
+      {p&&<MemberBadge role={p.role||ROLE_MEMBER} sx={{fontSize:10,padding:'2px 7px'}}/>}
     </div>
   );
+}
+/* 권한이 없을 때 이유를 알려주는 안내 */
+function GuestNote({children}){
+  return <div style={{fontSize:12,color:'#8A8A96',background:'#F7F7FA',borderRadius:10,padding:'10px 12px',lineHeight:1.6}}>{children}</div>;
 }
 function Chip({cat}){
   if(!cat)return null;
@@ -852,13 +872,13 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm}){
               <div style={{fontSize:14,color:'#5A5A66'}}>{fmtDot(nextDate)}</div>
               <div style={{fontSize:14,color:'#5A5A66',marginTop:2}}>{days}일 후</div>
             </div>
-            <Btn v="out" sx={{width:'100%',marginTop:14}} onClick={()=>setPicking(true)}>클래스 변경하기</Btn>
+            {isMember(me)&&<Btn v="out" sx={{width:'100%',marginTop:14}} onClick={()=>setPicking(true)}>클래스 변경하기</Btn>}
           </React.Fragment>:<React.Fragment>
             <span style={{fontSize:12,color:'#8A8A96',fontWeight:600}}>⏳ 미확정</span>
             <div style={{fontSize:17,fontWeight:800,color:'#1B1B22',margin:'8px 0 10px'}}>아직 클래스가 결정되지 않았어요</div>
             <div style={{fontSize:14,color:'#5A5A66'}}>{fmtDot(nextDate)}</div>
             <div style={{fontSize:14,color:'#5A5A66',marginTop:2}}>{days}일 후</div>
-            <Btn sx={{width:'100%',marginTop:14}} onClick={()=>setPicking(true)}>후보 목록에서 선택하기</Btn>
+            {isMember(me)&&<Btn sx={{width:'100%',marginTop:14}} onClick={()=>setPicking(true)}>후보 목록에서 선택하기</Btn>}
           </React.Fragment>}
         </div>
       </div>
@@ -900,8 +920,8 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm}){
       <div className="sec">
         <div className="sec-h"><span className="sec-t">다음달 원데이 클래스 투표 현황</span></div>
         {top3.length===0
-          ?<div style={CS}><Empty title="활동 후보가 없어요." sub="체험하고 싶은 클래스 후보를 등록해주세요."
-              action={<Btn sx={{width:'100%'}} onClick={()=>go({t:'candidates',add:true})}>클래스 추가하기</Btn>}/></div>
+          ?<div style={CS}><Empty title="활동 후보가 없어요." sub={isMember(me)?'체험하고 싶은 클래스 후보를 등록해주세요.':''}
+              action={isMember(me)?<Btn sx={{width:'100%'}} onClick={()=>go({t:'candidates',add:true})}>클래스 추가하기</Btn>:null}/></div>
           :<div style={{display:'flex',flexDirection:'column',gap:10}}>
             {top3.map((c,i)=>(
               <div key={c.id} onClick={()=>go({t:'cand',id:c.id})} style={{...CS,cursor:'pointer',display:'flex',alignItems:'center',gap:14}}>
@@ -929,8 +949,10 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm}){
             <div className="divider"/>
             {latestImp
               ?<ImpressionItem imp={latestImp} me={me} profiles={profiles} compact/>
-              :<Empty title="아직 소감을 남기지 않으셨네요!" sub="소감을 공유해 주세요"
-                 action={<Btn sx={{width:'100%'}} onClick={()=>go({t:'record',id:past.id,imp:true})}>소감 남기러 가기</Btn>}/>}
+              :canWriteImp(me,past)
+                ?<Empty title="아직 소감을 남기지 않으셨네요!" sub="소감을 공유해 주세요"
+                   action={<Btn sx={{width:'100%'}} onClick={()=>go({t:'record',id:past.id,imp:true})}>소감 남기러 가기</Btn>}/>
+                :<Empty title="이 달에 남긴 소감이 없어요." sub="참여한 달에 받은 초대 링크로 들어오면 소감을 남길 수 있어요."/>}
           </div>}
       </div>
     </div>
@@ -938,17 +960,19 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm}){
 }
 
 /* ═══════════════════ 다녀온 ═══════════════════════════════════ */
-function RecordsTab({records,candidates,onSave,go,openAdd,onAddClosed}){
+function RecordsTab({records,candidates,onSave,go,me,openAdd,onAddClosed}){
   const [desc,setDesc]=useState(true);
   const [showAdd,setShowAdd]=useState(false);
   useEffect(()=>{if(openAdd){setShowAdd(true);onAddClosed&&onAddClosed();}},[openAdd]);
   const sorted=[...records].sort((a,b)=>desc?recDateKey(b).localeCompare(recDateKey(a)):recDateKey(a).localeCompare(recDateKey(b)));
+  const canAdd=isMember(me);
   return(
-    <div>
+    <div style={{minHeight:'calc(100vh - 200px)',display:'flex',flexDirection:'column'}}>
       <div className="sec-h" style={{marginBottom:12}}>
         <span className="sec-t">총 {records.length}회</span>
         <SortToggle desc={desc} onToggle={()=>setDesc(d=>!d)}/>
       </div>
+      <div style={{flex:1}}>
       {sorted.length===0
         ?<div style={CS}><Empty title="아직 기록이 없어요." sub="다녀온 클래스를 기록해보세요!"/></div>
         :<div className="card-grid">
@@ -974,12 +998,16 @@ function RecordsTab({records,candidates,onSave,go,openAdd,onAddClosed}){
                     <span>⭐ 별점 : {avg||'0.0'}</span>
                   </div>
                 </div>
-                {imps.length===0&&<Btn sx={{width:'100%',marginTop:14}} onClick={()=>go({t:'record',id:r.id,imp:true})}>소감 남기기</Btn>}
+                {imps.length===0&&canWriteImp(me,r)&&<Btn sx={{width:'100%',marginTop:14}} onClick={()=>go({t:'record',id:r.id,imp:true})}>소감 남기기</Btn>}
               </div>
             );
           })}
         </div>}
-      {showAdd&&<AddRecordModal candidates={candidates} onAdd={r=>onSave([...records,r])} onClose={()=>setShowAdd(false)}/>}
+      </div>
+      {canAdd&&<div className="sticky-add">
+        <Btn sx={{width:'100%'}} onClick={()=>setShowAdd(true)}>+ 기록 추가</Btn>
+      </div>}
+      {showAdd&&canAdd&&<AddRecordModal candidates={candidates} onAdd={r=>onSave([...records,r])} onClose={()=>setShowAdd(false)}/>}
     </div>
   );
 }
@@ -995,8 +1023,17 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
   const photos=rec.photos||[];
   const afterParties=getAfterParties(rec);
   const links=getLinks(rec);
+  const canEdit=isMember(me);              // 기록·사진·뒷풀이 편집
+  const mayWrite=canWriteImp(me,rec);      // 소감 작성 (초대받은 달이면 객원도 가능)
+  const [inviteCopied,setInviteCopied]=useState(false);
 
   function update(changes){onUpdate({...rec,...changes});}
+  function copyInvite(){
+    const url=inviteUrl(rec.month);
+    const done=()=>setInviteCopied(true);
+    if(navigator.clipboard) navigator.clipboard.writeText(url).then(done).catch(()=>{});
+    else {const el=document.createElement('textarea');el.value=url;document.body.appendChild(el);el.select();document.execCommand('copy');el.remove();done();}
+  }
 
   const photosRef=useRef(photos);
   useEffect(()=>{photosRef.current=rec.photos||[];},[rec.photos]);
@@ -1070,7 +1107,7 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
       <div style={{...CS,marginBottom:12}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
           <div style={{display:'flex',alignItems:'center',gap:8}}><MonthBadge ym={rec.month}/><Chip cat={rec.cat}/></div>
-          <SmallBtn onClick={()=>setShowEdit(true)}>✏️ 수정</SmallBtn>
+          {canEdit&&<SmallBtn onClick={()=>setShowEdit(true)}>✏️ 수정</SmallBtn>}
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:9}}>
           {rec.date&&<div style={{fontSize:14,color:'#3A3A44'}}><b style={{fontWeight:700}}>날짜:</b> {displayDate(rec.date)}</div>}
@@ -1087,13 +1124,13 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
       <div style={{...CS,marginBottom:12}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
           <span style={{fontSize:14,fontWeight:800,color:'#1B1B22'}}>활동 사진 ({photos.length}장)</span>
-          <PhotoUploadBtn onUpload={handlePhotoUpload} uploading={uploadingPhoto}/>
+          {canEdit&&<PhotoUploadBtn onUpload={handlePhotoUpload} uploading={uploadingPhoto}/>}
         </div>
         {photos.length===0
-          ?<div style={{fontSize:13,color:'#A6A6B2',textAlign:'center',padding:'14px 0'}}>사진을 올려보세요</div>
+          ?<div style={{fontSize:13,color:'#A6A6B2',textAlign:'center',padding:'14px 0'}}>{canEdit?'사진을 올려보세요':'아직 사진이 없어요'}</div>
           :<React.Fragment>
-            <PhotoGrid photos={photos} onDelete={deletePhoto} thumb={rec.thumb} onSetThumb={u=>update({thumb:u})}/>
-            <div style={{fontSize:11,color:'#A6A6B2',marginTop:8}}>☐ 대표를 체크하면 목록 썸네일이 돼요</div>
+            <PhotoGrid photos={photos} onDelete={canEdit?deletePhoto:null} thumb={rec.thumb} onSetThumb={canEdit?(u=>update({thumb:u})):null}/>
+            {canEdit&&<div style={{fontSize:11,color:'#A6A6B2',marginTop:8}}>☐ 대표를 체크하면 목록 썸네일이 돼요</div>}
           </React.Fragment>}
       </div>
 
@@ -1101,11 +1138,16 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
       <div style={{...CS,marginBottom:12}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:showImpForm?12:4}}>
           <span style={{fontSize:14,fontWeight:800,color:'#1B1B22'}}>활동 소감 ({impressions.length}개)</span>
-          {!showImpForm&&<SmallBtn onClick={()=>setShowImpForm(true)}>소감 남기기</SmallBtn>}
+          <div style={{display:'flex',gap:6}}>
+            {/* 정회원은 이 달 소감을 쓸 수 있는 초대 링크를 만들어 객원멤버에게 줄 수 있다 */}
+            {canEdit&&rec.month&&<SmallBtn onClick={copyInvite}>{inviteCopied?'복사됨':'🔗 초대 링크'}</SmallBtn>}
+            {!showImpForm&&mayWrite&&<SmallBtn onClick={()=>setShowImpForm(true)}>소감 남기기</SmallBtn>}
+          </div>
         </div>
-        {showImpForm&&<div style={{marginBottom:impressions.length?4:0}}><ImpressionForm me={me} onSubmit={addImpression} onCancel={()=>setShowImpForm(false)}/></div>}
+        {!mayWrite&&<div style={{marginBottom:12}}><GuestNote>객원멤버는 참여한 달에 받은 초대 링크로 들어와야 소감을 남길 수 있어요. 좋아요는 언제든 가능해요.</GuestNote></div>}
+        {showImpForm&&mayWrite&&<div style={{marginBottom:impressions.length?4:0}}><ImpressionForm me={me} onSubmit={addImpression} onCancel={()=>setShowImpForm(false)}/></div>}
         {impressions.length===0&&!showImpForm
-          ?<div style={{fontSize:13,color:'#A6A6B2',textAlign:'center',padding:'14px 0'}}>첫 소감을 남겨주세요!</div>
+          ?<div style={{fontSize:13,color:'#A6A6B2',textAlign:'center',padding:'14px 0'}}>{mayWrite?'첫 소감을 남겨주세요!':'아직 소감이 없어요'}</div>
           :impressions.map((imp,i)=>(
             <div key={imp.id}>{i>0||showImpForm?<div className="divider"/>:null}
               <ImpressionItem imp={imp} me={me} profiles={profiles} onLike={likeImp} onDelete={delImpression} onClaim={claimImp} compact/>
@@ -1121,14 +1163,14 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
             <div style={{display:'flex',gap:8,marginTop:8}}><Btn sx={{flex:1}} onClick={saveParty}>저장</Btn><Btn v="gray" onClick={()=>setPartyDraft(null)}>취소</Btn></div>
           </div>
           :<PartyCard key={p.id||i} p={p} index={i+1} me={me} profiles={profiles}
-             onEdit={()=>setPartyDraft({...p})} onDelete={()=>delParty(p.id)}
-             onAddReview={addPartyReview} onDelReview={delPartyReview}/>
+             onEdit={canEdit?()=>setPartyDraft({...p}):null} onDelete={canEdit?()=>delParty(p.id):null}
+             onAddReview={canEdit?addPartyReview:null} onDelReview={canEdit?delPartyReview:null}/>
       ))}
       {draftIsNew&&<div style={{marginBottom:10}}>
         <PartyEditor p={partyDraft} index={afterParties.length+1} onChange={setPartyDraft}/>
         <div style={{display:'flex',gap:8,marginTop:8}}><Btn sx={{flex:1}} onClick={saveParty}>추가</Btn><Btn v="gray" onClick={()=>setPartyDraft(null)}>취소</Btn></div>
       </div>}
-      {!partyDraft&&<Btn sx={{width:'100%',marginTop:4}} onClick={()=>setPartyDraft(newParty())}>+ 뒷풀이 장소 추가</Btn>}
+      {!partyDraft&&canEdit&&<Btn sx={{width:'100%',marginTop:4}} onClick={()=>setPartyDraft(newParty())}>+ 뒷풀이 장소 추가</Btn>}
 
       {showEdit&&<EditRecordModal rec={rec} onSave={u=>{onUpdate(u);setShowEdit(false);}} onClose={()=>setShowEdit(false)}/>}
     </React.Fragment>
@@ -1166,10 +1208,10 @@ function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,openAdd,onAdd
             ))}
           </div>}
       </div>
-      <div className="sticky-add">
-        <Btn sx={{width:'100%'}} onClick={()=>setShowAdd(true)}>+ 추가</Btn>
-      </div>
-      {showAdd&&<AddCandidateModal me={me} onAdd={c=>onSave([...candidates,c])} onClose={()=>setShowAdd(false)}/>}
+      {isMember(me)
+        ?<div className="sticky-add"><Btn sx={{width:'100%'}} onClick={()=>setShowAdd(true)}>+ 추가</Btn></div>
+        :<div style={{paddingTop:14}}><GuestNote>객원멤버는 후보 등록과 투표에 참여할 수 없어요. 구경하고 소감에 좋아요를 남길 수 있어요.</GuestNote></div>}
+      {showAdd&&isMember(me)&&<AddCandidateModal me={me} onAdd={c=>onSave([...candidates,c])} onClose={()=>setShowAdd(false)}/>}
     </div>
   );
 }
@@ -1196,12 +1238,12 @@ function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles
       <div style={{...CS,marginBottom:12}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:12}}>
           <Chip cat={cand.cat}/>
-          <div style={{display:'flex',gap:6}}>
+          {isMember(me)&&<div style={{display:'flex',gap:6}}>
             <SmallBtn onClick={()=>setShowEdit(true)}>✏️ 수정</SmallBtn>
             {/* 후보는 등록한 본인만 삭제 가능 */}
             {mine&&<SmallBtn sx={{background:'#FEF2F2',color:'#E5484D'}}
               onClick={()=>{if(confirm(`"${cand.name}" 후보를 삭제할까요?\n투표 내용도 함께 사라집니다.`))onDelete(cand);}}>🗑 삭제</SmallBtn>}
-          </div>
+          </div>}
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:9}}>
           <div style={{fontSize:14,color:'#3A3A44'}}><b style={{fontWeight:700}}>금액:</b> {won(cand.price)}</div>
@@ -1212,9 +1254,9 @@ function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles
           </div>}
           {(cand.addedByUid||cand.addedBy)&&<div style={{fontSize:12,color:'#A6A6B2'}}>등록 · {nameOf(profiles,cand.addedByUid,cand.addedBy)}</div>}
         </div>
-        <Btn v={isConfirmed?'out':'pri'} sx={{width:'100%',marginTop:14}} onClick={()=>onConfirm(nextYM,cand.id)}>
+        {isMember(me)&&<Btn v={isConfirmed?'out':'pri'} sx={{width:'100%',marginTop:14}} onClick={()=>onConfirm(nextYM,cand.id)}>
           {isConfirmed?`✓ ${ymLabel(nextYM)} 클래스로 확정됨 (누르면 해제)`:`${ymLabel(nextYM)} 클래스로 확정하기`}
-        </Btn>
+        </Btn>}
       </div>
 
       {/* 투표: 익명 · 언제든 변경 가능 · 투표 전에도 결과 공개 */}
@@ -1223,15 +1265,18 @@ function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles
           <span style={{fontSize:14,fontWeight:800,color:'#1B1B22'}}>투표</span>
           <span style={{fontSize:12,color:'#8A8A96',fontWeight:700}}>득표수 {calcScore(cand)} · {voterCount(cand)}명 참여</span>
         </div>
-        <div style={{fontSize:12,color:'#A6A6B2',marginBottom:14}}>익명 투표예요. 누른 뒤에도 언제든 바꿀 수 있어요.</div>
+        <div style={{fontSize:12,color:'#A6A6B2',marginBottom:14}}>
+          {isMember(me)?'익명 투표예요. 누른 뒤에도 언제든 바꿀 수 있어요.':'객원멤버는 결과만 볼 수 있어요.'}
+        </div>
         <div style={{display:'flex',flexDirection:'column',gap:8}}>
           {VOPTS.map(o=>{
             const isMe=myVote===o.k;
+            const canVote=isMember(me);
             const cnt=Object.values(votes).filter(v=>v.k===o.k).length;
             const total=voterCount(cand);
             const pct=total?Math.round(cnt/total*100):0;
             return(
-              <button key={o.k} onClick={()=>castVote(o.k)} style={{position:'relative',overflow:'hidden',width:'100%',display:'flex',alignItems:'center',gap:10,padding:'12px 14px',borderRadius:10,cursor:'pointer',fontFamily:'inherit',textAlign:'left',border:isMe?`1.5px solid ${o.color}`:'1.5px solid #EFEFF3',background:'#fff'}}>
+              <button key={o.k} onClick={()=>canVote&&castVote(o.k)} disabled={!canVote} style={{position:'relative',overflow:'hidden',width:'100%',display:'flex',alignItems:'center',gap:10,padding:'12px 14px',borderRadius:10,cursor:canVote?'pointer':'default',fontFamily:'inherit',textAlign:'left',border:isMe?`1.5px solid ${o.color}`:'1.5px solid #EFEFF3',background:'#fff'}}>
                 {/* 결과 미리보기: 투표 여부와 상관없이 항상 보여준다 */}
                 <span style={{position:'absolute',left:0,top:0,bottom:0,width:`${pct}%`,background:isMe?'#F1EFFE':'#F5F5F8',transition:'width .25s'}}/>
                 <span style={{position:'relative',fontSize:17,flexShrink:0}}>{o.e}</span>
@@ -1241,7 +1286,7 @@ function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles
             );
           })}
         </div>
-        {myVote&&<button onClick={cancelVote} style={{marginTop:12,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:700,color:'#8A8A96',padding:0}}>내 투표 취소하기</button>}
+        {myVote&&isMember(me)&&<button onClick={cancelVote} style={{marginTop:12,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:700,color:'#8A8A96',padding:0}}>내 투표 취소하기</button>}
       </div>
 
       {showEdit&&<EditCandidateModal cand={cand} onSave={u=>{onUpdate(u);setShowEdit(false);}} onClose={()=>setShowEdit(false)}/>}
@@ -1502,7 +1547,7 @@ function LoginScreen({initialError}){
 }
 
 /* ── 마이페이지 (프로필 사진·이름·정회원) ────────────────────── */
-function ProfileModal({me,onSave,onClose}){
+function ProfileModal({me,profiles,onSave,onSetRole,onClose}){
   const [val,setVal]=useState(me.name||'');
   const [photo,setPhoto]=useState(me.photo||'');
   const [uploading,setUploading]=useState(false);
@@ -1529,8 +1574,13 @@ function ProfileModal({me,onSave,onClose}){
         </div>
         <div style={{textAlign:'center',marginTop:2}}>
           <div style={{fontSize:16,fontWeight:800,color:'#1B1B22',marginBottom:5}}>{val||me.name}</div>
-          <MemberBadge/>
+          <MemberBadge role={me.role}/>
         </div>
+        {!isMember(me)&&<div style={{width:'100%'}}><GuestNote>
+          객원멤버는 <b>조회</b>와 <b>활동 소감 좋아요</b>를 할 수 있어요.
+          참여한 달에 초대 링크를 받으면 그 달 소감도 남길 수 있어요.
+          {invitesOf(me).length>0&&<><br/>소감 작성 가능: {invitesOf(me).map(ymLabel).join(', ')}</>}
+        </GuestNote></div>}
         <div style={{fontSize:12,color:'#A6A6B2',textAlign:'center',lineHeight:1.6}}>
           {me.email}
           {me.joinedAt?<><br/>{fmtDot(new Date(me.joinedAt)).slice(0,10)} 가입</>:null}
@@ -1544,6 +1594,29 @@ function ProfileModal({me,onSave,onClose}){
           <span style={{flexShrink:0,color:val.length>=NICK_MAX?'#E5484D':'#A6A6B2'}}>{val.length}/{NICK_MAX}</span>
         </div>
         <Btn sx={{width:'100%'}} onClick={save} disabled={uploading}>{uploading?'업로드 중...':'저장'}</Btn>
+
+        {/* 운영자만 보이는 등급 관리 */}
+        {isAdmin(me)&&<div style={{borderTop:'1px solid #EFEFF3',paddingTop:14,marginTop:4}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:10}}>👑 멤버 등급 관리</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8,maxHeight:230,overflowY:'auto'}}>
+            {Object.entries(profiles||{}).map(([uid,p])=>(
+              <div key={uid} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,background:'#FAFAFC',borderRadius:10,padding:'8px 10px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:7,minWidth:0}}>
+                  <Avatar src={p.photo} size={22}/>
+                  <span style={{fontSize:13,fontWeight:700,color:'#3A3A44',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{p.name||'멤버'}</span>
+                </div>
+                <button onClick={()=>onSetRole(uid,(p.role||ROLE_MEMBER)===ROLE_MEMBER?ROLE_GUEST:ROLE_MEMBER)}
+                  disabled={uid===me.uid}
+                  style={{flexShrink:0,border:'none',cursor:uid===me.uid?'default':'pointer',fontFamily:'inherit',borderRadius:20,padding:'4px 10px',fontSize:11,fontWeight:800,
+                    background:(p.role||ROLE_MEMBER)===ROLE_MEMBER?'#F1EFFE':'#F1F1F5',color:(p.role||ROLE_MEMBER)===ROLE_MEMBER?'#6C5CE7':'#8A8A96',opacity:uid===me.uid?0.5:1}}>
+                  {(p.role||ROLE_MEMBER)===ROLE_MEMBER?'정회원':'객원멤버'}
+                </button>
+              </div>
+            ))}
+          </div>
+          <div style={{fontSize:11,color:'#A6A6B2',marginTop:8,lineHeight:1.6}}>뱃지를 눌러 등급을 바꿀 수 있어요. 본인 등급은 바꿀 수 없어요.</div>
+        </div>}
+
         <Btn v="gray" sx={{width:'100%'}} onClick={()=>{if(confirm('로그아웃할까요?'))signOut();}}>로그아웃</Btn>
       </div>
     </Modal>
@@ -1560,9 +1633,11 @@ function parseHash(){
   const h=String(location.hash||'').replace(/^#\/?/,'');
   const [t,id]=h.split('/');
   if((t==='record'||t==='cand')&&id) return {t,id:decodeURIComponent(id)};
+  if(t==='invite'&&id) return {t:'invite',ym:decodeURIComponent(id)};   // 객원멤버 초대
   if(VIEW_TABS.includes(t)) return {t};
   return {t:'home'};
 }
+const inviteUrl=ym=>`${location.origin}${location.pathname}#/invite/${encodeURIComponent(ym)}`;
 const viewToHash=v=>isDetail(v)?`#/${v.t}/${encodeURIComponent(v.id)}`:`#/${v.t}`;
 
 function App(){
@@ -1598,13 +1673,17 @@ function App(){
       if(!alive)return;
       setCandidates(data.candidates||[]);setRecords(data.records||[]);
       setConfirmed(data.confirmed||{});setProfiles(data.profiles||{});
-      // 첫 로그인이면 프로필 생성. 기존 프로필에 가입일이 없으면 채워 넣는다
+      // 첫 로그인이면 프로필 생성. 빠진 항목(가입일·등급)은 채워 넣는다.
+      // 등급 도입 전부터 프로필이 있던 사람 = 기존 가입자 → 정회원으로 승계.
+      // 프로필이 아예 없는 신규 가입자 → 객원멤버.
       const ps=data.profiles||{}, mine=ps[user.uid];
-      if(!mine||!mine.joinedAt){
+      if(!mine||!mine.joinedAt||!mine.role){
         const next={...ps,[user.uid]:{
           name:(mine&&mine.name)||user.displayName||'멤버',
           photo:(mine&&mine.photo)||user.photoURL||'',
           joinedAt:(mine&&mine.joinedAt)||Date.now(),
+          role:(mine&&mine.role)||(mine?ROLE_MEMBER:ROLE_GUEST),
+          invites:(mine&&mine.invites)||[],
         }};
         setProfiles(next);await fbSet('profiles',next);
       }
@@ -1630,6 +1709,23 @@ function App(){
     window.addEventListener('popstate',sync);
     return()=>{window.removeEventListener('hashchange',sync);window.removeEventListener('popstate',sync);};
   },[]);
+
+  // 초대 링크(#/invite/2026-07)로 들어오면 그 달 소감 작성 권한을 부여하고 기록으로 보낸다
+  useEffect(()=>{
+    if(!user||loading||view.t!=='invite')return;
+    const ym=view.ym;
+    const mine=profiles[user.uid]||{};
+    const has=(mine.invites||[]).includes(ym);
+    (async()=>{
+      if(!has){
+        const next={...profiles,[user.uid]:{...mine,invites:[...(mine.invites||[]),ym]}};
+        setProfiles(next);await fbSet('profiles',next);
+      }
+      const rec=records.find(r=>r.month===ym);
+      go(rec?{t:'record',id:rec.id,imp:true}:{t:'records'});
+      if(!has) setTimeout(()=>alert(`${ymLabel(ym)} 활동 소감을 남길 수 있어요!`),300);
+    })();
+  },[user,loading,view.t,view.ym,records]);
 
   // 확정한 클래스는 날짜가 지나면 '다녀온'에 기록을 자동 생성한다
   useEffect(()=>{
@@ -1677,6 +1773,12 @@ function App(){
     setProfiles(next);setShowProfile(false);
     await fbSet('profiles',next);
   }
+  // 운영자 전용: 다른 멤버 등급 변경
+  async function setMemberRole(uid,role){
+    if(uid===user.uid)return;
+    const next={...profiles,[uid]:{...(profiles[uid]||{}),role}};
+    setProfiles(next);await fbSet('profiles',next);
+  }
 
   const spinner=<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'#A6A6B2',fontSize:14}}>불러오는 중...</div>;
   if(user===undefined) return spinner;
@@ -1701,6 +1803,8 @@ function App(){
     name:myProfile.name||user.displayName||'멤버',
     photo:myProfile.photo||'',
     joinedAt:myProfile.joinedAt||0,
+    role:myProfile.role||ROLE_GUEST,
+    invites:myProfile.invites||[],
     email:user.email||'',
   };
 
@@ -1731,7 +1835,8 @@ function App(){
 
       <div className="main">
         {view.t==='home'&&<HomeTab candidates={candidates} records={records} confirmed={confirmed} me={me} profiles={profiles} go={go} onConfirm={confirmClass}/>}
-        {view.t==='records'&&<RecordsTab records={records} candidates={candidates} onSave={saveRecs} go={go}
+        {view.t==='invite'&&<Empty title="초대 링크를 확인하고 있어요..."/>}
+        {view.t==='records'&&<RecordsTab records={records} candidates={candidates} onSave={saveRecs} go={go} me={me}
           openAdd={pendingAdd==='records'} onAddClosed={()=>setPendingAdd(null)}/>}
         {view.t==='candidates'&&<CandidatesTab candidates={candidates} confirmed={confirmed} onSave={saveCands} go={go} me={me} profiles={profiles}
           openAdd={pendingAdd==='candidates'} onAddClosed={()=>setPendingAdd(null)}/>}
@@ -1745,7 +1850,7 @@ function App(){
           :<Empty title="후보를 찾을 수 없어요."/>}</div>}
       </div>
 
-      {showProfile&&<ProfileModal me={me} onSave={saveProfile} onClose={()=>setShowProfile(false)}/>}
+      {showProfile&&<ProfileModal me={me} profiles={profiles} onSave={saveProfile} onSetRole={setMemberRole} onClose={()=>setShowProfile(false)}/>}
     </div>
   );
 }
