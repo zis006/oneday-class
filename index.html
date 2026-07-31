@@ -175,9 +175,16 @@ const isKakaoUrl = u => /kakao\.com|kko\.kr/i.test(u||'');
 const isNaverUrl = u => /naver\.me|naver\.com/i.test(u||'');
 const isMapUrl   = u => isKakaoUrl(u) || isNaverUrl(u);
 
-// 구버전(naverUrl 한 칸에 카카오 링크가 들어간 경우)까지 흡수
+// https:// 가 없으면 <a href> 가 사이트 내부 상대경로로 해석돼 404 가 난다
+function normUrl(u){
+  const s=String(u||'').trim();
+  if(!s) return '';
+  if(/^https?:\/\//i.test(s)) return s;
+  return 'https://'+s.replace(/^\/+/,'').replace(/^(https?:)?\/*/i,'');
+}
+// 구버전(naverUrl 한 칸에 카카오 링크가 들어간 경우)까지 흡수 + 스킴 보정
 function getLinks(o){
-  const urls=[o.naverUrl,o.kakaoUrl,o.url].filter(Boolean);
+  const urls=[o.naverUrl,o.kakaoUrl,o.url].filter(Boolean).map(normUrl);
   return {naverUrl:urls.find(isNaverUrl)||'', kakaoUrl:urls.find(isKakaoUrl)||''};
 }
 
@@ -399,9 +406,10 @@ function SortToggle({desc,onToggle}){
 /* ── 지도 아이콘 (주소 옆) ───────────────────────────────────── */
 function MapIcons({naverUrl,kakaoUrl}){
   const base={display:'inline-flex',alignItems:'center',justifyContent:'center',width:22,height:22,borderRadius:6,fontSize:11,fontWeight:900,textDecoration:'none',flexShrink:0};
+  const n=normUrl(naverUrl), k=normUrl(kakaoUrl);
   return <React.Fragment>
-    {naverUrl&&<a href={naverUrl} target="_blank" rel="noopener noreferrer" title="네이버 지도" style={{...base,background:'#03C75A',color:'#fff'}}>N</a>}
-    {kakaoUrl&&<a href={kakaoUrl} target="_blank" rel="noopener noreferrer" title="카카오맵" style={{...base,background:'#FEE500',color:'#3C1E1E'}}>K</a>}
+    {n&&<a href={n} target="_blank" rel="noopener noreferrer" title="네이버 지도" style={{...base,background:'#03C75A',color:'#fff'}}>N</a>}
+    {k&&<a href={k} target="_blank" rel="noopener noreferrer" title="카카오맵" style={{...base,background:'#FEE500',color:'#3C1E1E'}}>K</a>}
   </React.Fragment>;
 }
 function AddressRow({address,naverUrl,kakaoUrl}){
@@ -425,7 +433,7 @@ function PlaceFields({v,onChange,onName}){
   const addrRef=useRef(null);
 
   async function commit(url){
-    const u=url.trim();
+    const u=normUrl(url);   // https:// 없이 붙여넣어도 정상 링크로 저장
     if(!isMapUrl(u)){setErr('네이버 지도 또는 카카오맵 링크를 넣어주세요');return;}
     const key=isKakaoUrl(u)?'kakaoUrl':'naverUrl';
     setErr('');setNote('');setRaw('');
@@ -623,7 +631,7 @@ function ImpressionForm({me,onSubmit,onCancel}){
     <div style={{background:'#F7F7FA',borderRadius:12,padding:14,display:'flex',flexDirection:'column',gap:12}}>
       <div style={{fontSize:12,color:'#8A8A96'}}><b style={{color:'#3A3A44'}}>{me.name}</b> 님으로 작성돼요</div>
       <div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>별점</div><Stars value={f.rating} onChange={r=>setF(p=>({...p,rating:r}))} size={28}/></div>
-      <FT placeholder="오늘 활동 어떠셨나요? ✍️" rows={4} value={f.text} onChange={e=>setF(p=>({...p,text:e.target.value}))}/>
+      <FT placeholder="이번달 활동 어떠셨나요? 😊" rows={4} value={f.text} onChange={e=>setF(p=>({...p,text:e.target.value}))}/>
       <div style={{display:'flex',alignItems:'center',gap:10}}>
         <PhotoUploadBtn onUpload={handlePhoto} uploading={uploading} label="+ 사진 첨부" multiple={false}/>
         {f.photo&&<div style={{position:'relative',width:52,height:52,borderRadius:8,overflow:'hidden',flexShrink:0}}>
@@ -1326,8 +1334,19 @@ function ProfileModal({me,onSave,onClose}){
 const TABS=[{id:'home',l:'홈'},{id:'records',l:'다녀온'},{id:'candidates',l:'다음 활동 후보'}];
 const isDetail=v=>v.t==='record'||v.t==='cand';
 
+/* 화면 상태를 주소(#)에 담아둔다 → 새로고침해도 보던 페이지가 그대로 유지됨 */
+const VIEW_TABS=['home','records','candidates'];
+function parseHash(){
+  const h=String(location.hash||'').replace(/^#\/?/,'');
+  const [t,id]=h.split('/');
+  if((t==='record'||t==='cand')&&id) return {t,id:decodeURIComponent(id)};
+  if(VIEW_TABS.includes(t)) return {t};
+  return {t:'home'};
+}
+const viewToHash=v=>isDetail(v)?`#/${v.t}/${encodeURIComponent(v.id)}`:`#/${v.t}`;
+
 function App(){
-  const [view,setView]=useState({t:'home'});
+  const [view,setView]=useState(parseHash);
   const [candidates,setCandidates]=useState([]);
   const [records,setRecords]=useState([]);
   const [confirmed,setConfirmed]=useState({});
@@ -1380,10 +1399,16 @@ function App(){
     return()=>{alive=false;unsub&&unsub();};
   },[user]);
 
+  // 뒤로/앞으로 가기와 주소 직접 변경을 화면에 반영
   useEffect(()=>{
-    const onPop=()=>setView(v=>isDetail(v)?{t:v.t==='record'?'records':'candidates'}:v);
-    window.addEventListener('popstate',onPop);
-    return()=>window.removeEventListener('popstate',onPop);
+    const sync=()=>setView(v=>{
+      const n=parseHash();
+      // 같은 화면이면 imp 같은 일시 플래그를 유지한다
+      return (n.t===v.t&&n.id===v.id)?v:n;
+    });
+    window.addEventListener('hashchange',sync);
+    window.addEventListener('popstate',sync);
+    return()=>{window.removeEventListener('hashchange',sync);window.removeEventListener('popstate',sync);};
   },[]);
 
   // 확정한 클래스는 날짜가 지나면 '다녀온'에 기록을 자동 생성한다
@@ -1420,9 +1445,10 @@ function App(){
   }
 
   function go(next){
-    if(next.add){setPendingAdd(next.t);setView({t:next.t});return;}
-    if(isDetail(next)) window.history.pushState({},'');
+    if(next.add) setPendingAdd(next.t);
     setView(next);
+    const h=viewToHash(next);
+    if(location.hash!==h) location.hash=h;   // 히스토리에 쌓여 뒤로가기도 동작
   }
   function back(){window.history.back();}
 
@@ -1478,7 +1504,7 @@ function App(){
           </button>
         </div>
         {!isDetail(view)&&<div className="nav-tabs">
-          {TABS.map(t=><button key={t.id} className={`nav-tab${view.t===t.id?' on':''}`} onClick={()=>setView({t:t.id})}>{t.l}</button>)}
+          {TABS.map(t=><button key={t.id} className={`nav-tab${view.t===t.id?' on':''}`} onClick={()=>go({t:t.id})}>{t.l}</button>)}
         </div>}
       </div>
 
