@@ -317,8 +317,9 @@ function getImpressions(rec){
 }
 // 로그인 이전에 쌓인 소감은 uid가 없어 표시이름으로 대조
 const isMine=(imp,me)=>me&&(imp.uid?imp.uid===me.uid:imp.author===me.name);
-// 표시 이름은 항상 계정 프로필에서 끌어온다 (프로필을 바꾸면 전부 따라 바뀜)
-const nameOf=(profiles,uid,fallback)=>(uid&&(profiles||{})[uid]&&profiles[uid].name)||fallback||'멤버';
+// 표시 이름·사진은 항상 계정 프로필에서 끌어온다 (프로필을 바꾸면 전부 따라 바뀜)
+const nameOf =(profiles,uid,fallback)=>(uid&&(profiles||{})[uid]&&profiles[uid].name)||fallback||'멤버';
+const photoOf=(profiles,uid)=>(uid&&(profiles||{})[uid]&&profiles[uid].photo)||'';
 function impAvg(list){
   const rated=list.filter(i=>i.rating>0);
   return rated.length?(rated.reduce((s,i)=>s+i.rating,0)/rated.length).toFixed(1):null;
@@ -352,6 +353,15 @@ function Stars({value=0,onChange,size=16}){
       <svg width={size} height={size} viewBox="0 0 24 24"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" fill={i<=value?'#2D2D35':'none'} stroke={i<=value?'#2D2D35':'#D1D1DA'} strokeWidth="1.5" strokeLinejoin="round"/></svg>
     </button>)}</div>;
 }
+function Avatar({src,size=22}){
+  const base={width:size,height:size,borderRadius:'50%',flexShrink:0,objectFit:'cover'};
+  const [broken,setBroken]=useState(false);
+  if(src&&!broken) return <img src={src} style={{...base,background:'#EDEDF0'}} onError={()=>setBroken(true)}/>;
+  return <span style={{...base,background:'#EDEDF0',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:Math.round(size*0.5)}}>👤</span>;
+}
+function MemberBadge({sx={}}){
+  return <span style={{display:'inline-flex',alignItems:'center',gap:3,background:'#F1EFFE',color:'#6C5CE7',borderRadius:20,padding:'3px 9px',fontSize:11,fontWeight:800,...sx}}>✦ 정회원</span>;
+}
 function Chip({cat}){
   if(!cat)return null;
   return <span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:12,color:'#5A5A66',fontWeight:600}}><span style={{fontSize:13}}>{CE[cat]}</span>{cat}</span>;
@@ -361,7 +371,12 @@ function MonthBadge({ym,sx={}}){
   return <span style={{fontSize:11,background:'#EEEBFD',color:'#6C5CE7',borderRadius:20,padding:'3px 10px',fontWeight:700,...sx}}>{ymLabel(ym)}</span>;
 }
 function Modal({title,onClose,children}){
-  return <div className="modal-back" onClick={e=>{if(e.target===e.currentTarget&&onClose)onClose();}}>
+  // 모달 안에서 시작해 밖에서 끝나는 드래그(텍스트 선택 등)는 backdrop click 으로 잡혀
+  // 팝업이 닫히는 문제가 있어, 누른 지점도 backdrop 이었을 때만 닫는다
+  const downOnBack=useRef(false);
+  return <div className="modal-back"
+    onMouseDown={e=>{downOnBack.current=(e.target===e.currentTarget);}}
+    onClick={e=>{if(e.target===e.currentTarget&&downOnBack.current&&onClose)onClose();downOnBack.current=false;}}>
     <div className="modal-box">
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 20px',borderBottom:'1px solid #EFEFF3',position:'sticky',top:0,background:'#fff',zIndex:1}}>
         <span style={{fontWeight:800,fontSize:16,color:'#1B1B22'}}>{title}</span>
@@ -564,7 +579,7 @@ function ImpressionItem({imp,me,profiles,onLike,onDelete,onClaim,compact}){
     <div style={{paddingTop:compact?0:12}}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:8}}>
         <div style={{display:'flex',alignItems:'center',gap:8,minWidth:0}}>
-          <span style={{width:22,height:22,borderRadius:'50%',background:'#EDEDF0',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:11,flexShrink:0}}>👤</span>
+          <Avatar src={photoOf(profiles,imp.uid)} size={22}/>
           <span style={{fontSize:13,fontWeight:700,color:'#3A3A44',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{nameOf(profiles,imp.uid,imp.author)}</span>
         </div>
         <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
@@ -763,9 +778,10 @@ function RecordsTab({records,candidates,onSave,go,openAdd,onAddClosed}){
                   {cover&&<div style={{width:'100%',aspectRatio:'16/9',borderRadius:10,overflow:'hidden',background:'#EDEDF0',marginBottom:12}}>
                     <img src={cover} style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>e.target.style.display='none'}/>
                   </div>}
-                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:7}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:7,flexWrap:'wrap'}}>
                     <MonthBadge ym={r.month}/>
                     <Chip cat={r.cat}/>
+                    {r.isStub&&!r.activity&&<span style={{fontSize:11,background:'#FFFBEB',color:'#B45309',borderRadius:20,padding:'3px 9px',fontWeight:700}}>✏️ 기록 채우기</span>}
                   </div>
                   <div style={{fontSize:16,fontWeight:800,color:'#1B1B22',marginBottom:5}}>{r.name}</div>
                   <div style={{fontSize:13,color:'#5A5A66',marginBottom:7}}>{displayDate(r.date)}</div>
@@ -1262,23 +1278,44 @@ function LoginScreen({initialError}){
   );
 }
 
-/* ── 표시 이름 변경 ──────────────────────────────────────────── */
+/* ── 마이페이지 (프로필 사진·이름·정회원) ────────────────────── */
 function ProfileModal({me,onSave,onClose}){
   const [val,setVal]=useState(me.name||'');
-  function save(){const v=val.trim();if(!v){alert('이름을 입력해주세요');return;}onSave(v);}
+  const [photo,setPhoto]=useState(me.photo||'');
+  const [uploading,setUploading]=useState(false);
+  async function handlePhoto(file){
+    setUploading(true);
+    const url=await uploadPhoto(file);
+    if(url) setPhoto(url);
+    setUploading(false);
+    return url;
+  }
+  function save(){
+    const v=val.trim();
+    if(!v){alert('이름을 입력해주세요');return;}
+    onSave({name:v,photo});
+  }
   return(
-    <Modal title="내 정보" onClose={onClose}>
-      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:18}}>
-        <span style={{width:36,height:36,borderRadius:'50%',background:'#EDEDF0',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:16}}>👤</span>
-        <div style={{minWidth:0}}>
-          <div style={{fontSize:14,fontWeight:800,color:'#1B1B22'}}>{me.name}</div>
-          <div style={{fontSize:12,color:'#A6A6B2',overflow:'hidden',textOverflow:'ellipsis'}}>{me.email}</div>
+    <Modal title="마이페이지" onClose={onClose}>
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:10,marginBottom:20}}>
+        <Avatar src={photo} size={76}/>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <PhotoUploadBtn onUpload={handlePhoto} uploading={uploading} label={photo?'사진 변경':'+ 사진 등록'} multiple={false}/>
+          {photo&&<button onClick={()=>setPhoto('')} style={{background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:700,color:'#A6A6B2'}}>삭제</button>}
+        </div>
+        <div style={{textAlign:'center',marginTop:2}}>
+          <div style={{fontSize:16,fontWeight:800,color:'#1B1B22',marginBottom:5}}>{val||me.name}</div>
+          <MemberBadge/>
+        </div>
+        <div style={{fontSize:12,color:'#A6A6B2',textAlign:'center',lineHeight:1.6}}>
+          {me.email}
+          {me.joinedAt?<><br/>{fmtDot(new Date(me.joinedAt)).slice(0,10)} 가입</>:null}
         </div>
       </div>
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
         <FI label="동아리에서 쓸 이름" value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>e.key==='Enter'&&save()} placeholder="예: 다은, 민지언니"/>
-        <div style={{fontSize:12,color:'#A6A6B2',lineHeight:1.6}}>투표·소감에 이 이름으로 표시돼요. 계정에 저장되니 다른 기기에서도 그대로예요.</div>
-        <Btn sx={{width:'100%'}} onClick={save}>저장</Btn>
+        <div style={{fontSize:12,color:'#A6A6B2',lineHeight:1.6}}>이름과 사진은 투표·소감에 함께 표시돼요. 계정에 저장되니 다른 기기에서도 그대로예요.</div>
+        <Btn sx={{width:'100%'}} onClick={save} disabled={uploading}>{uploading?'업로드 중...':'저장'}</Btn>
         <Btn v="gray" sx={{width:'100%'}} onClick={()=>{if(confirm('로그아웃할까요?'))signOut();}}>로그아웃</Btn>
       </div>
     </Modal>
@@ -1322,9 +1359,14 @@ function App(){
       if(!alive)return;
       setCandidates(data.candidates||[]);setRecords(data.records||[]);
       setConfirmed(data.confirmed||{});setProfiles(data.profiles||{});
-      // 첫 로그인이면 구글 이름으로 프로필 생성
-      if(!(data.profiles||{})[user.uid]){
-        const next={...(data.profiles||{}),[user.uid]:{name:user.displayName||'멤버'}};
+      // 첫 로그인이면 프로필 생성. 기존 프로필에 가입일이 없으면 채워 넣는다
+      const ps=data.profiles||{}, mine=ps[user.uid];
+      if(!mine||!mine.joinedAt){
+        const next={...ps,[user.uid]:{
+          name:(mine&&mine.name)||user.displayName||'멤버',
+          photo:(mine&&mine.photo)||user.photoURL||'',
+          joinedAt:(mine&&mine.joinedAt)||Date.now(),
+        }};
         setProfiles(next);await fbSet('profiles',next);
       }
       setLoading(false);
@@ -1344,6 +1386,30 @@ function App(){
     return()=>window.removeEventListener('popstate',onPop);
   },[]);
 
+  // 확정한 클래스는 날짜가 지나면 '다녀온'에 기록을 자동 생성한다
+  useEffect(()=>{
+    if(!user||loading)return;
+    const today=toISO(new Date());
+    const add=[];
+    Object.entries(confirmed||{}).forEach(([ym,cid])=>{
+      const c=candidates.find(x=>x.id===cid);
+      if(!c)return;
+      const [y,m]=ym.split('-').map(Number);
+      const d=nthWkday(y,m-1,3,2);
+      if(!d)return;
+      const iso=toISO(d);
+      if(iso>today)return;                                        // 아직 안 지난 일정
+      if(records.some(r=>r.month===ym&&r.candId===cid))return;     // 이미 생성됨
+      add.push({
+        id:uid(),month:ym,candId:cid,name:c.name,cat:c.cat||'',date:iso,
+        activity:c.activity||'',price:c.price||0,address:c.address||'',...getLinks(c),
+        photos:[],thumb:'',afterParties:[],impressions:[],reviews:[],
+        isStub:true,autoCreated:true,createdAt:Date.now(),
+      });
+    });
+    if(add.length) saveRecs([...records,...add]);
+  },[user,loading,confirmed,candidates,records]);
+
   async function saveCands(data){setCandidates(data);await fbSet('candidates',data);}
   async function saveRecs(data){setRecords(data);await fbSet('records',data);}
   // 이번(다가오는) 달 클래스 확정 · 같은 후보를 다시 고르면 해제
@@ -1360,8 +1426,8 @@ function App(){
   }
   function back(){window.history.back();}
 
-  async function saveProfileName(name){
-    const next={...profiles,[user.uid]:{...(profiles[user.uid]||{}),name}};
+  async function saveProfile(patch){
+    const next={...profiles,[user.uid]:{...(profiles[user.uid]||{}),...patch}};
     setProfiles(next);setShowProfile(false);
     await fbSet('profiles',next);
   }
@@ -1383,7 +1449,14 @@ function App(){
   );
   if(loading) return spinner;
 
-  const me={uid:user.uid,name:(profiles[user.uid]||{}).name||user.displayName||'멤버',email:user.email||''};
+  const myProfile=profiles[user.uid]||{};
+  const me={
+    uid:user.uid,
+    name:myProfile.name||user.displayName||'멤버',
+    photo:myProfile.photo||'',
+    joinedAt:myProfile.joinedAt||0,
+    email:user.email||'',
+  };
 
   const rec=view.t==='record'?records.find(r=>r.id===view.id):null;
   const cand=view.t==='cand'?candidates.find(c=>c.id===view.id):null;
@@ -1400,7 +1473,9 @@ function App(){
             </React.Fragment>
             :<span style={{flex:1,fontSize:20,fontWeight:800,color:'#1B1B22'}}>원데이 클래스 동아리</span>}
           <button onClick={()=>setShowProfile(true)} title={me.name}
-            style={{background:'none',border:'none',cursor:'pointer',fontSize:18,color:'#1B1B22',flexShrink:0,lineHeight:1}}>👤</button>
+            style={{background:'none',border:'none',cursor:'pointer',padding:0,flexShrink:0,lineHeight:0,display:'flex'}}>
+            <Avatar src={me.photo} size={30}/>
+          </button>
         </div>
         {!isDetail(view)&&<div className="nav-tabs">
           {TABS.map(t=><button key={t.id} className={`nav-tab${view.t===t.id?' on':''}`} onClick={()=>setView({t:t.id})}>{t.l}</button>)}
@@ -1423,7 +1498,7 @@ function App(){
           :<Empty title="후보를 찾을 수 없어요."/>}</div>}
       </div>
 
-      {showProfile&&<ProfileModal me={me} onSave={saveProfileName} onClose={()=>setShowProfile(false)}/>}
+      {showProfile&&<ProfileModal me={me} onSave={saveProfile} onClose={()=>setShowProfile(false)}/>}
     </div>
   );
 }
