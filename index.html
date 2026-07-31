@@ -152,6 +152,13 @@ function consumeRedirectError(){
 }
 function signOut(){ if(auth) auth.signOut(); }
 
+// AbortSignal.timeout 은 iOS 16 미만에 없어서 구형 기기에서 터진다
+function timeoutSignal(ms){
+  if(typeof AbortSignal!=='undefined'&&typeof AbortSignal.timeout==='function') return AbortSignal.timeout(ms);
+  if(typeof AbortController==='undefined') return undefined;
+  const c=new AbortController(); setTimeout(()=>c.abort(),ms); return c.signal;
+}
+
 /* ── 카카오 로컬 검색 (주소 채우기용) ────────────────────────────
    네이버는 자동 조회를 막고 있어서 링크만으로 주소를 못 가져온다.
    카카오 REST 키를 넣으면 "장소명 → 주소" 검색으로 대신 채울 수 있다.
@@ -164,7 +171,7 @@ async function searchPlaces(q){
   if(!q.trim()) return {ok:true,items:[]};
   try{
     const r=await fetch('https://dapi.kakao.com/v2/local/search/keyword.json?size=10&query='+encodeURIComponent(q.trim()),
-      {headers:{Authorization:'KakaoAK '+KAKAO_REST_KEY},signal:AbortSignal.timeout(8000)});
+      {headers:{Authorization:'KakaoAK '+KAKAO_REST_KEY},signal:timeoutSignal(8000)});
     if(r.status===401||r.status===403) return {ok:false,reason:'bad-key'};
     if(!r.ok) return {ok:false,reason:'http-'+r.status};
     const d=await r.json();
@@ -262,7 +269,7 @@ async function fetchPlaceInfo(url){
   const readers=[
     // 1) 렌더링된 텍스트를 주는 리더 (SPA에도 강함)
     async()=>{
-      const r=await fetch('https://r.jina.ai/'+url,{signal:AbortSignal.timeout(8000)});
+      const r=await fetch('https://r.jina.ai/'+url,{signal:timeoutSignal(8000)});
       if(!r.ok) throw new Error('reader '+r.status);
       const t=await r.text();
       if(/requiring CAPTCHA/i.test(t)) throw new Error('blocked');
@@ -272,7 +279,7 @@ async function fetchPlaceInfo(url){
     },
     // 2) 원문 HTML의 og 태그
     async()=>{
-      const r=await fetch('https://api.allorigins.win/raw?url='+encodeURIComponent(url),{signal:AbortSignal.timeout(8000)});
+      const r=await fetch('https://api.allorigins.win/raw?url='+encodeURIComponent(url),{signal:timeoutSignal(8000)});
       if(!r.ok) throw new Error('proxy '+r.status);
       const html=await r.text();
       const og=p=>{
@@ -1728,7 +1735,56 @@ function App(){
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+/* ── 오류 표시 ────────────────────────────────────────────────
+   렌더링 중 예외가 나면 React 가 화면을 통째로 비워버려서(빈 화면)
+   원인을 알 수 없다. 에러 경계로 잡아서 내용을 그대로 보여준다. */
+class ErrorBoundary extends React.Component{
+  constructor(p){super(p);this.state={err:null,info:null,copied:false};}
+  static getDerivedStateFromError(err){return {err};}
+  componentDidCatch(err,info){console.error('render error:',err,info);this.setState({info});}
+  render(){
+    if(!this.state.err) return this.props.children;
+    const msg=String((this.state.err&&this.state.err.message)||this.state.err);
+    const where=((this.state.info&&this.state.info.componentStack)||'').trim().split('\n').slice(0,5).join('\n');
+    const dump=`${msg}\n${where}\n${authDiagnostics()}`;
+    return(
+      <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:24}}>
+        <div style={{...CS,width:'100%',maxWidth:380,padding:'28px 22px'}}>
+          <div style={{fontSize:32,textAlign:'center',marginBottom:12}}>😵</div>
+          <div style={{fontSize:16,fontWeight:800,color:'#1B1B22',textAlign:'center',marginBottom:8}}>화면을 그리다가 오류가 났어요</div>
+          <p style={{fontSize:12,color:'#8A8A96',lineHeight:1.7,textAlign:'center',marginBottom:16}}>
+            아래 내용을 복사해서 알려주시면 바로 고칠 수 있어요.
+          </p>
+          <pre style={{background:'#FEF2F2',borderRadius:8,padding:'10px 12px',fontSize:10,color:'#B42318',lineHeight:1.6,whiteSpace:'pre-wrap',wordBreak:'break-all',fontFamily:'ui-monospace,Menlo,monospace',maxHeight:220,overflowY:'auto'}}>{dump}</pre>
+          <Btn sx={{width:'100%',marginTop:12}} onClick={()=>{
+            const done=()=>this.setState({copied:true});
+            if(navigator.clipboard) navigator.clipboard.writeText(dump).then(done).catch(()=>{});
+            else {const el=document.createElement('textarea');el.value=dump;document.body.appendChild(el);el.select();document.execCommand('copy');el.remove();done();}
+          }}>{this.state.copied?'복사했어요':'오류 내용 복사하기'}</Btn>
+          <Btn v="gray" sx={{width:'100%',marginTop:8}} onClick={()=>location.reload()}>새로고침</Btn>
+          <Btn v="gray" sx={{width:'100%',marginTop:8}} onClick={()=>{try{signOut();}catch(e){} location.href=location.pathname;}}>로그아웃하고 처음부터</Btn>
+        </div>
+      </div>
+    );
+  }
+}
+
+// React 가 아예 못 뜨는 경우(스크립트 오류)까지 화면에 남긴다
+function showFatal(msg){
+  const root=document.getElementById('root');
+  if(!root||root.dataset.fatal)return;
+  root.dataset.fatal='1';
+  root.innerHTML='<div style="padding:24px;font:13px/1.7 -apple-system,sans-serif;color:#B42318">'
+    +'<b style="display:block;font-size:15px;margin-bottom:8px;color:#1B1B22">앱을 불러오지 못했어요</b>'
+    +'<pre style="white-space:pre-wrap;word-break:break-all;background:#FEF2F2;padding:10px;border-radius:8px;font-size:11px">'
+    +String(msg).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))+'</pre></div>';
+}
+window.addEventListener('error',e=>{if(!document.getElementById('root').children.length)showFatal(`${e.message}\n${e.filename||''}:${e.lineno||''}`);});
+window.addEventListener('unhandledrejection',e=>{const r=e.reason;console.error('unhandled:',r);});
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <ErrorBoundary><App/></ErrorBoundary>
+);
 </script>
 </body>
 </html>
