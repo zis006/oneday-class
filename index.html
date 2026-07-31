@@ -99,15 +99,28 @@ if (CONFIGURED) {
       → SDK로 우회 불가. 외부 브라우저로 열도록 안내해야 한다.
    2) 팝업: 모바일에서 자주 막히거나 즉시 닫힘 → 리다이렉트로 폴백 */
 const UA = navigator.userAgent || '';
-const IN_APP_BROWSER = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|FB_IAB|Line\/|DaumApps|everytimeApp|SamsungBrowser\/[0-9.]+ ?Mobile.*wv|; ?wv\)/i.test(UA);
-const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(UA);
+const IS_MOBILE  = /Android|iPhone|iPad|iPod/i.test(UA);
 const IS_ANDROID = /Android/i.test(UA);
+const IS_IOS     = /iPhone|iPad|iPod/i.test(UA);
+
+// 이름을 아는 인앱 브라우저들 (네이버웍스·카톡·인스타 등)
+const KNOWN_IN_APP = /KAKAOTALK|KAKAOSTORY|NAVER\(inapp|WorksMobile|NaverWorks|GSaaSMobileApp|Instagram|FBAN|FBAV|FB_IAB|Line\/|DaumApps|everytimeApp|Snapchat|TikTok|musical_ly|Twitter|; ?wv\)/i.test(UA);
+// 목록에 없는 인앱도 잡는다: iOS 정식 브라우저는 UA 에 Version/ 이 있는데 웹뷰는 없다
+const IOS_WEBVIEW = IS_IOS && !/Version\/\d/.test(UA) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(UA);
+const IN_APP_BROWSER = KNOWN_IN_APP || IOS_WEBVIEW;
+const IN_APP_NAME =
+  /KAKAOTALK/i.test(UA) ? '카카오톡' :
+  /WorksMobile|NaverWorks|GSaaSMobileApp/i.test(UA) ? '네이버웍스' :
+  /NAVER\(inapp/i.test(UA) ? '네이버' :
+  /Instagram/i.test(UA) ? '인스타그램' :
+  /FBAN|FBAV|FB_IAB/i.test(UA) ? '페이스북' :
+  /Line\//i.test(UA) ? '라인' : '';
 
 function externalBrowserUrl(){
-  const u = location.href.replace(/^https?:\/\//,'');
-  return IS_ANDROID
-    ? `intent://${u}#Intent;scheme=https;package=com.android.chrome;end`
-    : null;   // iOS는 강제 전환 수단이 없어 안내만 가능
+  const bare = location.href.replace(/^https?:\/\//,'');
+  if(IS_ANDROID) return `intent://${bare}#Intent;scheme=https;package=com.android.chrome;end`;
+  if(IS_IOS)     return `x-safari-https://${bare}`;   // 일부 iOS 웹뷰에서 사파리로 전환됨
+  return null;
 }
 
 // authDomain(firebaseapp.com)이 배포 도메인과 달라서 리다이렉트 방식은
@@ -1436,17 +1449,19 @@ function LoginScreen({initialError}){
 
         {inApp?<React.Fragment>
           <div style={{background:'#FFFBEB',border:'1.5px solid #FDE68A',borderRadius:12,padding:'14px 16px',margin:'12px 0 18px',textAlign:'left'}}>
-            <div style={{fontSize:13,fontWeight:800,color:'#92400E',marginBottom:6}}>앱 안에서는 구글 로그인이 막혀요</div>
+            <div style={{fontSize:13,fontWeight:800,color:'#92400E',marginBottom:6}}>
+              {IN_APP_NAME?`${IN_APP_NAME} 앱 안에서는 `:'앱 안에서는 '}구글 로그인이 막혀요
+            </div>
             <div style={{fontSize:12,color:'#92400E',lineHeight:1.7}}>
-              구글 정책상 카카오톡·인스타그램 같은 앱 내 브라우저에서는 로그인이 되지 않아요.
-              <b> 크롬이나 사파리로 열어주세요.</b>
+              구글 정책상 앱에 내장된 브라우저에서는 로그인이 되지 않아요.
+              <b> {IS_ANDROID?'크롬':'사파리'}로 열어주세요.</b>
               {IS_ANDROID
-                ? <><br/>아래 버튼을 누르거나, 우측 하단 ⋮ → "다른 브라우저로 열기"</>
-                : <><br/>우측 하단 <b>⤴︎</b> → "Safari로 열기"를 눌러주세요.</>}
+                ? <><br/>아래 버튼을 누르거나, 우측 상단 ⋮ → "다른 브라우저로 열기"</>
+                : <><br/>아래 버튼이 안 되면 우측 하단 <b>⤴︎</b> 또는 <b>⋯</b> → "Safari로 열기"</>}
             </div>
           </div>
           {intentUrl&&<a href={intentUrl} style={{display:'block',textDecoration:'none',marginBottom:8}}>
-            <Btn sx={{width:'100%'}}>크롬으로 열기</Btn>
+            <Btn sx={{width:'100%'}}>{IS_ANDROID?'크롬으로 열기':'Safari로 열기'}</Btn>
           </a>}
           <Btn v="gray" sx={{width:'100%'}} onClick={copyLink}>{copied?'주소를 복사했어요':'주소 복사하기'}</Btn>
           <button onClick={go} style={{marginTop:12,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,color:'#A6A6B2',textDecoration:'underline'}}>그래도 로그인 시도해보기</button>
