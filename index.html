@@ -110,6 +110,9 @@ function externalBrowserUrl(){
     : null;   // iOS는 강제 전환 수단이 없어 안내만 가능
 }
 
+// authDomain(firebaseapp.com)이 배포 도메인과 달라서 리다이렉트 방식은
+// 브라우저 저장소 분리 정책에 막혀 조용히 실패한다. 그래서 팝업을 기본으로 쓰고
+// 실패하면 자동으로 넘기지 말고 원인을 그대로 보여준다.
 async function signIn(){
   if(!auth) return {err:'Firebase 설정이 필요해요'};
   if(IN_APP_BROWSER) return {inApp:true};
@@ -120,10 +123,27 @@ async function signIn(){
     return {};
   } catch(e) {
     if(e.code==='auth/popup-closed-by-user' || e.code==='auth/cancelled-popup-request') return {};
-    // 팝업이 안 되는 환경은 리다이렉트로 재시도
-    try { await auth.signInWithRedirect(provider); return {}; }
-    catch(e2){ return {err:`${e2.code||''} ${e2.message||e2}`.trim()}; }
+    return {err:`${e.code||''} ${e.message||e}`.trim(), canRetry:true};
   }
+}
+// 팝업이 아예 안 열리는 환경을 위한 수동 폴백
+async function signInRedirect(){
+  if(!auth) return {err:'Firebase 설정이 필요해요'};
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({prompt:'select_account'});
+  try { await auth.signInWithRedirect(provider); return {}; }
+  catch(e){ return {err:`${e.code||''} ${e.message||e}`.trim()}; }
+}
+// 화면에서 바로 캡처해 보낼 수 있는 진단 정보
+function authDiagnostics(){
+  return [
+    `origin: ${location.origin}`,
+    `authDomain: ${FIREBASE_CONFIG.authDomain}`,
+    `inApp: ${IN_APP_BROWSER} / mobile: ${IS_MOBILE}`,
+    `cookies: ${navigator.cookieEnabled}`,
+    `storage: ${(()=>{try{localStorage.setItem('_t','1');localStorage.removeItem('_t');return 'ok';}catch(e){return 'blocked';}})()}`,
+    `UA: ${UA}`,
+  ].join('\n');
 }
 // 리다이렉트로 돌아왔을 때의 실패는 여기서만 잡힌다
 function consumeRedirectError(){
@@ -131,6 +151,30 @@ function consumeRedirectError(){
   return auth.getRedirectResult().then(()=>'').catch(e=>`${e.code||''} ${e.message||e}`.trim());
 }
 function signOut(){ if(auth) auth.signOut(); }
+
+/* ── 카카오 로컬 검색 (주소 채우기용) ────────────────────────────
+   네이버는 자동 조회를 막고 있어서 링크만으로 주소를 못 가져온다.
+   카카오 REST 키를 넣으면 "장소명 → 주소" 검색으로 대신 채울 수 있다.
+   키 발급: developers.kakao.com > 내 애플리케이션 > REST API 키
+   (플랫폼 > Web 에 배포 도메인 등록 필요, 무료·카드 불필요) */
+const KAKAO_REST_KEY = 'f89d3cb33646b4ff8cae87322dfff492';
+
+async function searchPlaces(q){
+  if(!KAKAO_REST_KEY) return {ok:false,reason:'no-key'};
+  if(!q.trim()) return {ok:true,items:[]};
+  try{
+    const r=await fetch('https://dapi.kakao.com/v2/local/search/keyword.json?size=10&query='+encodeURIComponent(q.trim()),
+      {headers:{Authorization:'KakaoAK '+KAKAO_REST_KEY},signal:AbortSignal.timeout(8000)});
+    if(r.status===401||r.status===403) return {ok:false,reason:'bad-key'};
+    if(!r.ok) return {ok:false,reason:'http-'+r.status};
+    const d=await r.json();
+    return {ok:true,items:(d.documents||[]).map(x=>({
+      name:x.place_name||'',
+      address:x.road_address_name||x.address_name||'',
+      kakaoUrl:x.place_url||'',
+    }))};
+  }catch(e){ return {ok:false,reason:'network'}; }
+}
 
 /* ── Cloudinary ──────────────────────────────────────────────── */
 const CLOUDINARY_CLOUD = 'r9jlchwx';
@@ -256,6 +300,7 @@ async function fetchPlaceInfo(url){
 /* ── Utilities ───────────────────────────────────────────────── */
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const WD=['일','월','화','수','목','금','토'];
+const NICK_MAX=10;   // 닉네임 길이 제한 (공백 포함)
 const CATS=['도예','요리','베이킹','공예','그림','플라워','캘리','가죽','기타'];
 const CE={도예:'🏺',요리:'🍳',베이킹:'🥐',공예:'✂️',그림:'🎨',플라워:'💐',캘리:'✒️',가죽:'👜',기타:'✨'};
 
@@ -306,15 +351,21 @@ const daysUntil=d=>{const a=new Date();a.setHours(0,0,0,0);const b=new Date(d);b
 const won=n=>`${Number(n||0).toLocaleString()}원`;
 
 /* ── 뒷풀이 정규화 ───────────────────────────────────────────── */
-const PARTY_DEFAULTS={name:'',address:'',naverUrl:'',kakaoUrl:'',menu:'',photos:[],review:''};
+const PARTY_DEFAULTS={name:'',address:'',naverUrl:'',kakaoUrl:'',menu:'',photos:[],reviews:[]};
 const newParty=()=>({id:uid(),...PARTY_DEFAULTS});
+// 한줄평은 멤버별로 쌓인다. 구버전의 단일 문자열(review)도 목록으로 흡수
+function getPartyReviews(p){
+  const list=(p.reviews||[]).map(r=>({id:r.id,uid:r.uid||'',author:r.author||'',text:r.text||'',createdAt:r.createdAt||0}));
+  if(p.review&&String(p.review).trim()) list.unshift({id:'legacy-'+(p.id||''),uid:'',author:'',text:String(p.review).trim(),createdAt:0});
+  return list;
+}
 function getAfterParties(rec){
   const raw=(rec.afterParties&&rec.afterParties.length>0)
     ? rec.afterParties
     : (rec.afterPartyName||rec.afterPartyAddress)
       ? [{id:'legacy',name:rec.afterPartyName||'',address:rec.afterPartyAddress||'',url:rec.afterPartyUrl||''}]
       : [];
-  return raw.map(p=>({...PARTY_DEFAULTS,...p,...getLinks(p),photos:p.photos||[]}));
+  return raw.map(p=>({...PARTY_DEFAULTS,...p,...getLinks(p),photos:p.photos||[],reviews:p.reviews||[]}));
 }
 
 /* ── 활동 소감 정규화 (구버전 리뷰 흡수) ─────────────────────── */
@@ -367,7 +418,20 @@ function Avatar({src,size=22}){
   return <span style={{...base,background:'#EDEDF0',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:Math.round(size*0.5)}}>👤</span>;
 }
 function MemberBadge({sx={}}){
-  return <span style={{display:'inline-flex',alignItems:'center',gap:3,background:'#F1EFFE',color:'#6C5CE7',borderRadius:20,padding:'3px 9px',fontSize:11,fontWeight:800,...sx}}>✦ 정회원</span>;
+  return <span style={{display:'inline-flex',alignItems:'center',gap:3,background:'#F1EFFE',color:'#6C5CE7',borderRadius:20,padding:'3px 9px',fontSize:11,fontWeight:800,flexShrink:0,...sx}}>✦ 정회원</span>;
+}
+/* 소감·한줄평 작성자 표시 (프로필 사진 + 닉네임 + 정회원 뱃지) */
+function UserLine({uid,fallbackName,profiles,size=22}){
+  const isMember=!!(uid&&(profiles||{})[uid]);   // 프로필이 있으면 가입한 정회원
+  return(
+    <div style={{display:'flex',alignItems:'center',gap:7,minWidth:0}}>
+      <Avatar src={photoOf(profiles,uid)} size={size}/>
+      <span style={{fontSize:13,fontWeight:700,color:'#3A3A44',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+        {nameOf(profiles,uid,fallbackName)}
+      </span>
+      {isMember&&<MemberBadge sx={{fontSize:10,padding:'2px 7px'}}/>}
+    </div>
+  );
 }
 function Chip({cat}){
   if(!cat)return null;
@@ -421,46 +485,94 @@ function AddressRow({address,naverUrl,kakaoUrl}){
 }
 
 /* ── 장소 입력 (지도 링크 한 칸 + 주소) ──────────────────────
-   네이버/카카오를 따로 받지 않고 한 칸에서 URL을 보고 자동 분류한다.
-   둘 다 넣고 싶으면 하나씩 붙여넣으면 각각 칩으로 쌓인다. */
+   주소를 채우는 경로를 3단으로 둔다.
+   1) 붙여넣은 텍스트 안에 주소가 같이 있으면 그대로 사용 (앱 공유 텍스트)
+   2) 링크에서 자동 추출 (카카오는 됨 / 네이버는 차단)
+   3) 장소명으로 카카오 검색해서 고르기 (네이버 링크의 대안) */
+const RE_MAP_URL=/(?:https?:\/\/)?[\w.-]*(?:naver\.me|map\.naver\.com|place\.map\.kakao\.com|map\.kakao\.com|kko\.kr)\/?[^\s,;)\]]*/gi;
+function extractMapUrls(text){
+  return (String(text||'').match(RE_MAP_URL)||[]).map(normUrl).filter(isMapUrl);
+}
+// 주소를 찾을 때 URL 조각이 섞이지 않도록 제거
+const stripUrls=t=>String(t||'').replace(RE_MAP_URL,' ').replace(/https?:\/\/\S+/gi,' ');
+
 function PlaceFields({v,onChange,onName}){
   const [raw,setRaw]=useState('');
   const [fetching,setFetching]=useState(false);
   const [err,setErr]=useState('');
   const [note,setNote]=useState('');
+  const [q,setQ]=useState('');
+  const [searching,setSearching]=useState(false);
+  const [results,setResults]=useState(null);
   const vRef=useRef(v);
   useEffect(()=>{vRef.current=v;},[v]);
   const addrRef=useRef(null);
 
-  async function commit(url){
-    const u=normUrl(url);   // https:// 없이 붙여넣어도 정상 링크로 저장
-    if(!isMapUrl(u)){setErr('네이버 지도 또는 카카오맵 링크를 넣어주세요');return;}
-    const key=isKakaoUrl(u)?'kakaoUrl':'naverUrl';
+  async function commit(text){
+    const urls=extractMapUrls(text);
+    if(!urls.length){setErr('네이버 지도 또는 카카오맵 링크를 넣어주세요');return;}
     setErr('');setNote('');setRaw('');
-    onChange({...vRef.current,[key]:u});
+
+    // 1) 링크를 종류별로 담고, 같이 붙여넣은 텍스트에서 주소를 먼저 찾아본다
+    const patch={...vRef.current};
+    urls.forEach(u=>{patch[isKakaoUrl(u)?'kakaoUrl':'naverUrl']=u;});
+    const fromText=pickAddress(stripUrls(text));
+    let filled=false;
+    if(fromText&&!patch.address){patch.address=fromText;filled=true;}
+    onChange(patch);
+    if(filled){setNote('붙여넣은 내용에서 주소를 찾았어요. 틀리면 고쳐주세요.');return;}
+    if(patch.address) return;   // 이미 주소가 있으면 조회할 필요 없음
+
+    // 2) 링크에서 추출 (성공률 높은 카카오 우선)
     setFetching(true);
-    const info=await fetchPlaceInfo(u);
+    const target=urls.find(isKakaoUrl)||urls[0];
+    const info=await fetchPlaceInfo(target);
     setFetching(false);
     const cur=vRef.current;
     if(info.ok&&info.address&&!cur.address){
-      onChange({...cur,[key]:u,address:info.address});
+      onChange({...cur,address:info.address});
       setNote('주소를 자동으로 넣었어요. 틀리면 고쳐주세요.');
-    }else if(info.ok&&!info.address){
-      setNote('링크는 저장했어요. 주소는 못 찾았으니 직접 입력해주세요.');
-    }else if(!info.ok){
-      // 실패를 조용히 넘기지 않고 이유를 알려준다
-      setNote(info.reason==='naver-blocked'
-        ? '네이버는 자동 조회를 막고 있어요. 링크는 저장됐으니 주소만 직접 입력해주세요.'
-        : '지금 주소를 가져올 수 없어요. 링크는 저장됐으니 주소만 직접 입력해주세요.');
+    }else{
+      const naverOnly=!urls.some(isKakaoUrl);
+      setNote(naverOnly
+        ? (KAKAO_REST_KEY
+            ? '네이버는 자동 조회를 막고 있어요. 아래에서 장소명으로 검색해 주소를 채워주세요.'
+            : '네이버는 자동 조회를 막고 있어요. 링크를 열어 주소를 복사해 붙여넣어 주세요.')
+        : '주소를 못 찾았어요. 직접 입력하거나 장소명으로 검색해주세요.');
+      if(naverOnly&&!q) setQ(cur.name||'');
+      if(addrRef.current) addrRef.current.focus();
     }
     if(info.ok&&info.name&&onName) onName(info.name);
-    if((!info.ok||!info.address)&&addrRef.current) addrRef.current.focus();
   }
+
+  async function doSearch(){
+    if(!q.trim())return;
+    setSearching(true);setResults(null);
+    const r=await searchPlaces(q);
+    setSearching(false);
+    if(!r.ok){
+      setResults([]);
+      setNote(r.reason==='bad-key'?'카카오 REST 키가 올바르지 않아요.'
+        :r.reason==='no-key'?'카카오 REST 키가 설정되지 않았어요.'
+        :'검색에 실패했어요. 잠시 후 다시 시도해주세요.');
+      return;
+    }
+    setResults(r.items);
+    if(!r.items.length) setNote('검색 결과가 없어요. 가게 이름을 바꿔서 찾아보세요.');
+  }
+  function pick(item){
+    const cur=vRef.current;
+    onChange({...cur,address:item.address,kakaoUrl:cur.kakaoUrl||normUrl(item.kakaoUrl)});
+    if(onName&&item.name) onName(item.name);
+    setResults(null);setQ('');
+    setNote('주소를 넣었어요. 틀리면 고쳐주세요.');
+  }
+
   function onType(e){
     const val=e.target.value;
     setRaw(val);
     if(err)setErr('');
-    if(isMapUrl(val)) commit(val);   // 붙여넣는 즉시 인식
+    if(extractMapUrls(val).length) commit(val);   // 붙여넣는 즉시 인식
   }
   function remove(key){ onChange({...vRef.current,[key]:''}); }
 
@@ -488,6 +600,25 @@ function PlaceFields({v,onChange,onName}){
         {v.kakaoUrl&&chip('kakaoUrl','K','카카오맵','#FEE500','#3C1E1E')}
       </div>}
       <FI ref={addrRef} label="주소" value={v.address||''} onChange={e=>onChange({...v,address:e.target.value})} placeholder="서울시 마포구 ... (직접 입력 가능)"/>
+
+      {/* 네이버 링크는 주소를 못 가져오므로, 장소명 검색으로 대신 채운다 */}
+      {KAKAO_REST_KEY&&<div style={{borderTop:'1px solid #EFEFF3',paddingTop:10,display:'flex',flexDirection:'column',gap:8}}>
+        <label style={{fontSize:12,fontWeight:700,color:'#6B7280'}}>🔎 장소명으로 주소 찾기</label>
+        <div style={{display:'flex',gap:6}}>
+          <input style={{...IS,flex:1}} value={q} onChange={e=>setQ(e.target.value)}
+            onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();doSearch();}}}
+            placeholder="가게 이름 (예: 우리예술)"/>
+          <Btn v="gray" sx={{padding:'10px 16px'}} onClick={doSearch} disabled={searching}>{searching?'검색 중':'검색'}</Btn>
+        </div>
+        {results&&results.length>0&&<div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:210,overflowY:'auto'}}>
+          {results.map((r,i)=>(
+            <button key={i} onClick={()=>pick(r)} style={{textAlign:'left',fontFamily:'inherit',cursor:'pointer',background:'#fff',border:'1.5px solid #E4E4EC',borderRadius:10,padding:'9px 12px'}}>
+              <div style={{fontSize:13,fontWeight:700,color:'#1B1B22'}}>{r.name}</div>
+              <div style={{fontSize:12,color:'#8A8A96',marginTop:2}}>{r.address}</div>
+            </button>
+          ))}
+        </div>}
+      </div>}
     </div>
   );
 }
@@ -552,12 +683,20 @@ function PartyEditor({p,index,onChange,onRemove}){
           {photos.length>0&&<div style={{marginBottom:8}}><PhotoGrid photos={photos} onDelete={i=>set('photos',photos.filter((_,x)=>x!==i))}/></div>}
           <PhotoUploadBtn onUpload={addPhoto} uploading={uploading}/>
         </div>
-        <FI label="한줄평" value={p.review||''} onChange={e=>set('review',e.target.value)} placeholder="한 줄로 남겨주세요"/>
+        <div style={{fontSize:12,color:'#A6A6B2',lineHeight:1.6}}>한줄평은 등록 후 멤버들이 각자 남길 수 있어요.</div>
       </div>
     </div>
   );
 }
-function PartyCard({p,index,onEdit,onDelete}){
+function PartyCard({p,index,onEdit,onDelete,me,profiles,onAddReview,onDelReview}){
+  const [text,setText]=useState('');
+  const reviews=getPartyReviews(p);
+  function submit(){
+    const t=text.trim();
+    if(!t)return;
+    onAddReview(p.id,{id:uid(),uid:me.uid,author:me.name,text:t,createdAt:Date.now()});
+    setText('');
+  }
   return(
     <div style={{...CS,marginBottom:10}}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
@@ -572,7 +711,27 @@ function PartyCard({p,index,onEdit,onDelete}){
         <AddressRow address={p.address} naverUrl={p.naverUrl} kakaoUrl={p.kakaoUrl}/>
         {p.menu&&<div style={{fontSize:14,color:'#3A3A44',lineHeight:1.6}}>{p.menu}</div>}
         {(p.photos||[]).length>0&&<div style={{marginTop:3}}><PhotoGrid photos={p.photos}/></div>}
-        {p.review&&<div style={{fontSize:13,color:'#5A5A66',background:'#F7F7FA',borderRadius:10,padding:'9px 12px',lineHeight:1.5,marginTop:3}}>💬 {p.review}</div>}
+
+        {/* 멤버별 한줄평 */}
+        {onAddReview&&<div style={{borderTop:'1px solid #EFEFF3',paddingTop:11,marginTop:4}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:reviews.length?10:8}}>💬 한줄평 {reviews.length>0?`(${reviews.length})`:''}</div>
+          {reviews.map(r=>(
+            <div key={r.id} style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8,marginBottom:10}}>
+              <div style={{minWidth:0,flex:1}}>
+                <UserLine uid={r.uid} fallbackName={r.author||'멤버'} profiles={profiles} size={20}/>
+                <div style={{fontSize:13,color:'#3A3A44',lineHeight:1.55,marginTop:5}}>{r.text}</div>
+              </div>
+              {onDelReview&&me&&r.uid===me.uid&&
+                <button onClick={()=>onDelReview(p.id,r.id)} style={{background:'none',border:'none',cursor:'pointer',color:'#D6D6DE',fontSize:17,lineHeight:1,padding:'0 2px',flexShrink:0}}>×</button>}
+            </div>
+          ))}
+          <div style={{display:'flex',gap:6}}>
+            <input style={{...IS,flex:1}} value={text} onChange={e=>setText(e.target.value)}
+              onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();submit();}}}
+              placeholder="한 줄로 남겨주세요"/>
+            <Btn v="gray" sx={{padding:'10px 16px'}} onClick={submit}>등록</Btn>
+          </div>
+        </div>}
       </div>
     </div>
   );
@@ -586,10 +745,7 @@ function ImpressionItem({imp,me,profiles,onLike,onDelete,onClaim,compact}){
   return(
     <div style={{paddingTop:compact?0:12}}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:8}}>
-        <div style={{display:'flex',alignItems:'center',gap:8,minWidth:0}}>
-          <Avatar src={photoOf(profiles,imp.uid)} size={22}/>
-          <span style={{fontSize:13,fontWeight:700,color:'#3A3A44',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{nameOf(profiles,imp.uid,imp.author)}</span>
-        </div>
+        <UserLine uid={imp.uid} fallbackName={imp.author} profiles={profiles}/>
         <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
           <span style={{fontSize:12,color:'#A6A6B2'}}>{imp.createdAt?fmtDot(new Date(imp.createdAt)).slice(0,10):''}</span>
           {onDelete&&mine&&<button onClick={()=>onDelete(imp.id)} title="내 소감 삭제" style={{background:'none',border:'none',cursor:'pointer',color:'#D6D6DE',fontSize:18,lineHeight:1,padding:'0 2px'}}>×</button>}
@@ -879,6 +1035,14 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
     if(!confirm('이 뒷풀이 장소를 삭제할까요?'))return;
     update({afterParties:afterParties.filter(x=>x.id!==id)});
   }
+  // 뒷풀이 한줄평 (멤버별)
+  function addPartyReview(pid,review){
+    update({afterParties:afterParties.map(x=>x.id===pid?{...x,reviews:[...(x.reviews||[]),review]}:x)});
+  }
+  function delPartyReview(pid,rid){
+    if(!confirm('한줄평을 삭제할까요?'))return;
+    update({afterParties:afterParties.map(x=>x.id===pid?{...x,reviews:(x.reviews||[]).filter(r=>r.id!==rid)}:x)});
+  }
 
   return(
     <React.Fragment>
@@ -936,7 +1100,9 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
             <PartyEditor p={partyDraft} index={i+1} onChange={setPartyDraft}/>
             <div style={{display:'flex',gap:8,marginTop:8}}><Btn sx={{flex:1}} onClick={saveParty}>저장</Btn><Btn v="gray" onClick={()=>setPartyDraft(null)}>취소</Btn></div>
           </div>
-          :<PartyCard key={p.id||i} p={p} index={i+1} onEdit={()=>setPartyDraft({...p})} onDelete={()=>delParty(p.id)}/>
+          :<PartyCard key={p.id||i} p={p} index={i+1} me={me} profiles={profiles}
+             onEdit={()=>setPartyDraft({...p})} onDelete={()=>delParty(p.id)}
+             onAddReview={addPartyReview} onDelReview={delPartyReview}/>
       ))}
       {draftIsNew&&<div style={{marginBottom:10}}>
         <PartyEditor p={partyDraft} index={afterParties.length+1} onChange={setPartyDraft}/>
@@ -1231,18 +1397,28 @@ function LoginScreen({initialError}){
   const [err,setErr]=useState(initialError||'');
   const [copied,setCopied]=useState(false);
 
+  const [canRetry,setCanRetry]=useState(false);
+  const [showDiag,setShowDiag]=useState(false);
+  const [diagCopied,setDiagCopied]=useState(false);
+
   async function go(){
-    setBusy(true);setErr('');
+    setBusy(true);setErr('');setCanRetry(false);
     const r=await signIn();
     setBusy(false);
     if(r.inApp) setInApp(true);
-    else if(r.err) setErr(r.err);
+    else if(r.err){setErr(r.err);setCanRetry(!!r.canRetry);}
   }
-  function copyLink(){
-    const t=location.href;
-    if(navigator.clipboard) navigator.clipboard.writeText(t).then(()=>setCopied(true)).catch(()=>{});
-    else { const el=document.createElement('textarea');el.value=t;document.body.appendChild(el);el.select();document.execCommand('copy');el.remove();setCopied(true); }
+  async function goRedirect(){
+    setBusy(true);setErr('');
+    const r=await signInRedirect();
+    setBusy(false);
+    if(r.err) setErr(r.err);
   }
+  function copyText(t,cb){
+    if(navigator.clipboard) navigator.clipboard.writeText(t).then(cb).catch(()=>{});
+    else { const el=document.createElement('textarea');el.value=t;document.body.appendChild(el);el.select();document.execCommand('copy');el.remove();cb(); }
+  }
+  const copyLink=()=>copyText(location.href,()=>setCopied(true));
   const intentUrl=externalBrowserUrl();
 
   return(
@@ -1278,9 +1454,26 @@ function LoginScreen({initialError}){
           </button>
         </React.Fragment>}
 
-        {err&&<div style={{marginTop:14,background:'#FEF2F2',borderRadius:10,padding:'10px 12px',fontSize:11,color:'#B42318',lineHeight:1.6,textAlign:'left',wordBreak:'break-all'}}>
-          로그인 실패: {err}
-        </div>}
+        {err&&<React.Fragment>
+          <div style={{marginTop:14,background:'#FEF2F2',borderRadius:10,padding:'10px 12px',fontSize:11,color:'#B42318',lineHeight:1.6,textAlign:'left',wordBreak:'break-all'}}>
+            로그인 실패: {err}
+          </div>
+          {canRetry&&<Btn v="gray" sx={{width:'100%',marginTop:8}} onClick={goRedirect} disabled={busy}>다른 방식으로 로그인 시도</Btn>}
+        </React.Fragment>}
+
+        {/* 원인 파악용 진단 정보 — 안 될 때 이 내용을 캡처해서 보내면 된다 */}
+        <div style={{marginTop:16,textAlign:'left'}}>
+          <button onClick={()=>setShowDiag(s=>!s)} style={{background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:11,color:'#A6A6B2',textDecoration:'underline',padding:0}}>
+            {showDiag?'진단 정보 접기':'로그인이 안 되나요? 진단 정보 보기'}
+          </button>
+          {showDiag&&<React.Fragment>
+            <pre style={{marginTop:8,background:'#F7F7FA',borderRadius:8,padding:'10px 12px',fontSize:10,color:'#5A5A66',lineHeight:1.6,whiteSpace:'pre-wrap',wordBreak:'break-all',fontFamily:'ui-monospace,Menlo,monospace'}}>{authDiagnostics()}{err?`\nerror: ${err}`:''}</pre>
+            <Btn v="gray" sx={{width:'100%',marginTop:8,fontSize:12,padding:'9px 14px'}}
+              onClick={()=>copyText(authDiagnostics()+(err?`\nerror: ${err}`:''),()=>setDiagCopied(true))}>
+              {diagCopied?'복사했어요':'진단 정보 복사하기'}
+            </Btn>
+          </React.Fragment>}
+        </div>
       </div>
     </div>
   );
@@ -1301,6 +1494,7 @@ function ProfileModal({me,onSave,onClose}){
   function save(){
     const v=val.trim();
     if(!v){alert('이름을 입력해주세요');return;}
+    if(v.length>NICK_MAX){alert(`이름은 공백 포함 ${NICK_MAX}글자까지 가능해요`);return;}
     onSave({name:v,photo});
   }
   return(
@@ -1321,8 +1515,12 @@ function ProfileModal({me,onSave,onClose}){
         </div>
       </div>
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
-        <FI label="동아리에서 쓸 이름" value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>e.key==='Enter'&&save()} placeholder="예: 다은, 민지언니"/>
-        <div style={{fontSize:12,color:'#A6A6B2',lineHeight:1.6}}>이름과 사진은 투표·소감에 함께 표시돼요. 계정에 저장되니 다른 기기에서도 그대로예요.</div>
+        <FI label="동아리에서 쓸 이름" value={val} maxLength={NICK_MAX}
+          onChange={e=>setVal(e.target.value.slice(0,NICK_MAX))} onKeyDown={e=>e.key==='Enter'&&save()} placeholder="예: 다은, 민지언니"/>
+        <div style={{fontSize:12,color:'#A6A6B2',lineHeight:1.6,display:'flex',justifyContent:'space-between',gap:8}}>
+          <span>이름과 사진은 헤더·투표·소감에 함께 표시돼요.</span>
+          <span style={{flexShrink:0,color:val.length>=NICK_MAX?'#E5484D':'#A6A6B2'}}>{val.length}/{NICK_MAX}</span>
+        </div>
         <Btn sx={{width:'100%'}} onClick={save} disabled={uploading}>{uploading?'업로드 중...':'저장'}</Btn>
         <Btn v="gray" sx={{width:'100%'}} onClick={()=>{if(confirm('로그아웃할까요?'))signOut();}}>로그아웃</Btn>
       </div>
@@ -1499,8 +1697,9 @@ function App(){
             </React.Fragment>
             :<span style={{flex:1,fontSize:20,fontWeight:800,color:'#1B1B22'}}>원데이 클래스 동아리</span>}
           <button onClick={()=>setShowProfile(true)} title={me.name}
-            style={{background:'none',border:'none',cursor:'pointer',padding:0,flexShrink:0,lineHeight:0,display:'flex'}}>
+            style={{background:'none',border:'none',cursor:'pointer',padding:0,flexShrink:0,display:'flex',alignItems:'center',gap:7,maxWidth:'46%'}}>
             <Avatar src={me.photo} size={30}/>
+            <span style={{fontSize:13,fontWeight:700,color:'#3A3A44',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{me.name}</span>
           </button>
         </div>
         {!isDetail(view)&&<div className="nav-tabs">
