@@ -93,20 +93,42 @@ if (CONFIGURED) {
   } catch(e) { console.warn('Firebase 초기화 실패:', e); }
 }
 
-/* ── 구글 간편로그인 ─────────────────────────────────────────── */
+/* ── 구글 간편로그인 ─────────────────────────────────────────────
+   모바일 실패 원인 두 가지를 같이 처리한다.
+   1) 카톡·인스타 등 인앱 브라우저: 구글이 OAuth 자체를 차단(disallowed_useragent)
+      → SDK로 우회 불가. 외부 브라우저로 열도록 안내해야 한다.
+   2) 팝업: 모바일에서 자주 막히거나 즉시 닫힘 → 리다이렉트로 폴백 */
+const UA = navigator.userAgent || '';
+const IN_APP_BROWSER = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|FB_IAB|Line\/|DaumApps|everytimeApp|SamsungBrowser\/[0-9.]+ ?Mobile.*wv|; ?wv\)/i.test(UA);
+const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(UA);
+const IS_ANDROID = /Android/i.test(UA);
+
+function externalBrowserUrl(){
+  const u = location.href.replace(/^https?:\/\//,'');
+  return IS_ANDROID
+    ? `intent://${u}#Intent;scheme=https;package=com.android.chrome;end`
+    : null;   // iOS는 강제 전환 수단이 없어 안내만 가능
+}
+
 async function signIn(){
-  if(!auth){alert('Firebase 설정이 필요해요');return;}
+  if(!auth) return {err:'Firebase 설정이 필요해요'};
+  if(IN_APP_BROWSER) return {inApp:true};
   const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({prompt:'select_account'});
   try {
     await auth.signInWithPopup(provider);
+    return {};
   } catch(e) {
-    // 팝업이 막히는 환경(일부 모바일 인앱 브라우저)에서는 리다이렉트로 전환
-    if(e.code==='auth/popup-blocked' || e.code==='auth/operation-not-supported-in-this-environment'){
-      await auth.signInWithRedirect(provider);
-    } else if(e.code!=='auth/popup-closed-by-user' && e.code!=='auth/cancelled-popup-request'){
-      alert('로그인에 실패했어요: ' + e.message);
-    }
+    if(e.code==='auth/popup-closed-by-user' || e.code==='auth/cancelled-popup-request') return {};
+    // 팝업이 안 되는 환경은 리다이렉트로 재시도
+    try { await auth.signInWithRedirect(provider); return {}; }
+    catch(e2){ return {err:`${e2.code||''} ${e2.message||e2}`.trim()}; }
   }
+}
+// 리다이렉트로 돌아왔을 때의 실패는 여기서만 잡힌다
+function consumeRedirectError(){
+  if(!auth) return Promise.resolve('');
+  return auth.getRedirectResult().then(()=>'').catch(e=>`${e.code||''} ${e.message||e}`.trim());
 }
 function signOut(){ if(auth) auth.signOut(); }
 
@@ -159,29 +181,69 @@ function getLinks(o){
   return {naverUrl:urls.find(isNaverUrl)||'', kakaoUrl:urls.find(isKakaoUrl)||''};
 }
 
+const SIDO='서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충청|충북|충남|전라|전북|전남|경상|경북|경남|제주';
+// 실패 응답에서 가게명처럼 딸려오는 값들
+const BAD_NAMES=/^(URL Source|Published Time|네이버 지도|네이버 플레이스|카카오맵|Kakao ?Map|다음지도|)$/i;
+// 도로명/지번이 실제로 들어있는 후보만 주소로 인정 (홍보문구 오탐 방지)
 function pickAddress(text){
   if(!text) return '';
   const t=text.replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/\s+/g,' ').trim();
-  const m=t.match(/(서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충청|충북|충남|전라|전북|전남|경상|경북|경남|제주)[^|·\n]{4,60}/);
-  return m?m[0].trim().replace(/[,.]$/,''):t.slice(0,60);
+  const hits=t.match(new RegExp(`(${SIDO})[^|·\\n\\]\\)]{4,70}`,'g'))||[];
+  const hasRoad=/(로|길|동|가|읍|면|리)\s?\d/;
+  for(const h of hits){
+    if(!hasRoad.test(h)) continue;
+    // 우편번호·전화·영업시간·이모지 등 뒤따르는 안내문구는 잘라낸다
+    const s=h.split(/\s*\(우|📌|⏰|☎|전화번호|영업시간|매일|\d{2,4}-\d{3,4}-\d{4}/)[0]
+             .trim().replace(/[,.]+$/,'');
+    if(s.length>=8) return s;
+  }
+  return '';
 }
 
+/* 링크 → 가게명·주소 자동 추출.
+   ※ 브라우저에서 외부 사이트를 직접 못 읽어서 공개 프록시를 거친다.
+     - 카카오(place.map.kakao.com): 정상 동작
+     - 네이버: 봇 차단(CAPTCHA)이 걸려 대부분 실패 → 주소는 직접 입력해야 함
+   실패 사유를 호출부에 알려주기 위해 {ok,name,address,reason} 형태로 반환한다. */
 async function fetchPlaceInfo(url){
-  if(!isMapUrl(url)) return null;
-  try{
-    const proxy=`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-    const res=await fetch(proxy,{signal:AbortSignal.timeout(8000)});
-    const data=await res.json();
-    const html=data.contents||'';
-    const getOG=prop=>{
-      const m=html.match(new RegExp(`<meta[^>]*property="${prop}"[^>]*content="([^"]+)"`,'i'))||
-              html.match(new RegExp(`<meta[^>]*content="([^"]+)"[^>]*property="${prop}"`,'i'));
-      return m?m[1].replace(/&amp;/g,'&').replace(/&#39;/g,"'"):'';
-    };
-    const name=(getOG('og:title')||'').split(/\s*[|:]\s*/)[0].trim();
-    const address=pickAddress(getOG('og:description'));
-    return name?{name,address}:null;
-  }catch(e){console.warn('장소 정보 가져오기 실패:',e);return null;}
+  if(!isMapUrl(url)) return {ok:false,reason:'bad-url'};
+
+  const readers=[
+    // 1) 렌더링된 텍스트를 주는 리더 (SPA에도 강함)
+    async()=>{
+      const r=await fetch('https://r.jina.ai/'+url,{signal:AbortSignal.timeout(8000)});
+      if(!r.ok) throw new Error('reader '+r.status);
+      const t=await r.text();
+      if(/requiring CAPTCHA/i.test(t)) throw new Error('blocked');
+      // \s 는 줄바꿈까지 먹어서 다음 줄(URL Source:)을 잡아버리므로 가로 공백만 허용
+      const name=((t.match(/^Title:[ \t]*(.+)$/m)||[])[1]||'').split(/\s*[|:]\s*/)[0].trim();
+      return {name:BAD_NAMES.test(name)?'':name,address:pickAddress(t)};
+    },
+    // 2) 원문 HTML의 og 태그
+    async()=>{
+      const r=await fetch('https://api.allorigins.win/raw?url='+encodeURIComponent(url),{signal:AbortSignal.timeout(8000)});
+      if(!r.ok) throw new Error('proxy '+r.status);
+      const html=await r.text();
+      const og=p=>{
+        const m=html.match(new RegExp(`<meta[^>]*property="${p}"[^>]*content="([^"]+)"`,'i'))||
+                html.match(new RegExp(`<meta[^>]*content="([^"]+)"[^>]*property="${p}"`,'i'));
+        return m?m[1].replace(/&amp;/g,'&').replace(/&#39;/g,"'"):'';
+      };
+      return {name:(og('og:title')||'').split(/\s*[|:]\s*/)[0].trim(),address:pickAddress(og('og:description'))};
+    },
+  ];
+
+  // 순차로 돌리면 실패 시 대기가 길어져서, 병렬로 던지고 먼저 성공한 것을 쓴다
+  const hit=await new Promise(resolve=>{
+    let pending=readers.length, settled=false;
+    const finish=r=>{ if(!settled){settled=true;resolve(r);} };
+    const miss=()=>{ if(--pending===0) finish(null); };
+    readers.forEach(read=>read()
+      .then(r=>{ if(r&&(r.name||r.address)) finish(r); else miss(); })
+      .catch(e=>{ console.warn('장소 정보 조회 실패:',e.message); miss(); }));
+  });
+  if(hit) return {ok:true,name:hit.name||'',address:hit.address||''};
+  return {ok:false,reason:isNaverUrl(url)?'naver-blocked':'unavailable'};
 }
 
 /* ── Utilities ───────────────────────────────────────────────── */
@@ -255,6 +317,8 @@ function getImpressions(rec){
 }
 // 로그인 이전에 쌓인 소감은 uid가 없어 표시이름으로 대조
 const isMine=(imp,me)=>me&&(imp.uid?imp.uid===me.uid:imp.author===me.name);
+// 표시 이름은 항상 계정 프로필에서 끌어온다 (프로필을 바꾸면 전부 따라 바뀜)
+const nameOf=(profiles,uid,fallback)=>(uid&&(profiles||{})[uid]&&profiles[uid].name)||fallback||'멤버';
 function impAvg(list){
   const rated=list.filter(i=>i.rating>0);
   return rated.length?(rated.reduce((s,i)=>s+i.rating,0)/rated.length).toFixed(1):null;
@@ -266,7 +330,7 @@ const IS={border:'1.5px solid #E4E4EC',borderRadius:10,padding:'10px 12px',fontS
 const CS={background:'#fff',borderRadius:14,padding:16,boxShadow:'0 1px 3px rgba(0,0,0,.04)'};
 
 /* ── UI atoms ────────────────────────────────────────────────── */
-function FI({label,...p}){return <div style={{display:'flex',flexDirection:'column',gap:5}}>{label&&<label style={{fontSize:12,fontWeight:700,color:'#6B7280'}}>{label}</label>}<input style={IS} {...p}/></div>;}
+const FI=React.forwardRef(function FI({label,...p},ref){return <div style={{display:'flex',flexDirection:'column',gap:5}}>{label&&<label style={{fontSize:12,fontWeight:700,color:'#6B7280'}}>{label}</label>}<input ref={ref} style={IS} {...p}/></div>;});
 function FT({label,rows=3,...p}){return <div style={{display:'flex',flexDirection:'column',gap:5}}>{label&&<label style={{fontSize:12,fontWeight:700,color:'#6B7280'}}>{label}</label>}<textarea style={{...IS,resize:'none'}} rows={rows} {...p}/></div>;}
 function Btn({children,v='pri',sx={},...p}){
   const V={
@@ -340,23 +404,34 @@ function PlaceFields({v,onChange,onName}){
   const [raw,setRaw]=useState('');
   const [fetching,setFetching]=useState(false);
   const [err,setErr]=useState('');
+  const [note,setNote]=useState('');
   const vRef=useRef(v);
   useEffect(()=>{vRef.current=v;},[v]);
+  const addrRef=useRef(null);
 
   async function commit(url){
     const u=url.trim();
     if(!isMapUrl(u)){setErr('네이버 지도 또는 카카오맵 링크를 넣어주세요');return;}
     const key=isKakaoUrl(u)?'kakaoUrl':'naverUrl';
-    setErr('');setRaw('');
+    setErr('');setNote('');setRaw('');
     onChange({...vRef.current,[key]:u});
     setFetching(true);
     const info=await fetchPlaceInfo(u);
-    if(info){
-      const cur=vRef.current;
-      onChange({...cur,[key]:u,address:cur.address||info.address});
-      if(onName&&info.name) onName(info.name);
-    }
     setFetching(false);
+    const cur=vRef.current;
+    if(info.ok&&info.address&&!cur.address){
+      onChange({...cur,[key]:u,address:info.address});
+      setNote('주소를 자동으로 넣었어요. 틀리면 고쳐주세요.');
+    }else if(info.ok&&!info.address){
+      setNote('링크는 저장했어요. 주소는 못 찾았으니 직접 입력해주세요.');
+    }else if(!info.ok){
+      // 실패를 조용히 넘기지 않고 이유를 알려준다
+      setNote(info.reason==='naver-blocked'
+        ? '네이버는 자동 조회를 막고 있어요. 링크는 저장됐으니 주소만 직접 입력해주세요.'
+        : '지금 주소를 가져올 수 없어요. 링크는 저장됐으니 주소만 직접 입력해주세요.');
+    }
+    if(info.ok&&info.name&&onName) onName(info.name);
+    if((!info.ok||!info.address)&&addrRef.current) addrRef.current.focus();
   }
   function onType(e){
     const val=e.target.value;
@@ -383,12 +458,13 @@ function PlaceFields({v,onChange,onName}){
           placeholder="네이버 지도 · 카카오맵 링크 붙여넣기"/>
         {err&&<div style={{fontSize:12,color:'#E5484D'}}>{err}</div>}
         {fetching&&<div style={{fontSize:12,color:'#6C5CE7'}}>⏳ 장소 정보 불러오는 중...</div>}
+        {!fetching&&note&&<div style={{fontSize:12,color:'#8A8A96',lineHeight:1.5}}>{note}</div>}
       </div>
       {(v.naverUrl||v.kakaoUrl)&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
         {v.naverUrl&&chip('naverUrl','N','네이버 지도','#03C75A','#fff')}
         {v.kakaoUrl&&chip('kakaoUrl','K','카카오맵','#FEE500','#3C1E1E')}
       </div>}
-      <FI label="주소" value={v.address||''} onChange={e=>onChange({...v,address:e.target.value})} placeholder="서울시 마포구 ... (직접 입력 가능)"/>
+      <FI ref={addrRef} label="주소" value={v.address||''} onChange={e=>onChange({...v,address:e.target.value})} placeholder="서울시 마포구 ... (직접 입력 가능)"/>
     </div>
   );
 }
@@ -480,7 +556,7 @@ function PartyCard({p,index,onEdit,onDelete}){
 }
 
 /* ── 소감 카드 ───────────────────────────────────────────────── */
-function ImpressionItem({imp,me,onLike,onDelete,onClaim,compact}){
+function ImpressionItem({imp,me,profiles,onLike,onDelete,onClaim,compact}){
   const liked=!!me&&(imp.likes||[]).includes(me.uid);
   const mine=isMine(imp,me);
   const claimable=!imp.uid&&!!onClaim;   // 로그인 도입 전에 쌓인 소감
@@ -489,7 +565,7 @@ function ImpressionItem({imp,me,onLike,onDelete,onClaim,compact}){
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:8}}>
         <div style={{display:'flex',alignItems:'center',gap:8,minWidth:0}}>
           <span style={{width:22,height:22,borderRadius:'50%',background:'#EDEDF0',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:11,flexShrink:0}}>👤</span>
-          <span style={{fontSize:13,fontWeight:700,color:'#3A3A44',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{imp.author}</span>
+          <span style={{fontSize:13,fontWeight:700,color:'#3A3A44',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{nameOf(profiles,imp.uid,imp.author)}</span>
         </div>
         <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
           <span style={{fontSize:12,color:'#A6A6B2'}}>{imp.createdAt?fmtDot(new Date(imp.createdAt)).slice(0,10):''}</span>
@@ -549,7 +625,8 @@ function ImpressionForm({me,onSubmit,onCancel}){
 }
 
 /* ═══════════════════ 홈 ═══════════════════════════════════════ */
-function HomeTab({candidates,records,confirmed,me,go}){
+function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm}){
+  const [picking,setPicking]=useState(false);
   const nextDate=getNextClassDate();
   const nextYM=toYM(nextDate);
   const days=daysUntil(nextDate);
@@ -570,19 +647,55 @@ function HomeTab({candidates,records,confirmed,me,go}){
         <div className="sec-h"><span className="sec-t">다가오는 원데이 클래스</span></div>
         <div style={CS}>
           {confirmedCand?<React.Fragment>
-            <Chip cat={confirmedCand.cat}/>
-            <div style={{fontSize:17,fontWeight:800,color:'#1B1B22',margin:'8px 0 10px'}}>{confirmedCand.name}</div>
-            <div style={{fontSize:14,color:'#5A5A66'}}>{fmtDot(nextDate)}</div>
-            <div style={{fontSize:14,color:'#5A5A66',marginTop:2}}>{days}일 후</div>
+            <div onClick={()=>go({t:'cand',id:confirmedCand.id})} style={{cursor:'pointer'}}>
+              <Chip cat={confirmedCand.cat}/>
+              <div style={{fontSize:17,fontWeight:800,color:'#1B1B22',margin:'8px 0 10px'}}>{confirmedCand.name}</div>
+              <div style={{fontSize:14,color:'#5A5A66'}}>{fmtDot(nextDate)}</div>
+              <div style={{fontSize:14,color:'#5A5A66',marginTop:2}}>{days}일 후</div>
+            </div>
+            <Btn v="out" sx={{width:'100%',marginTop:14}} onClick={()=>setPicking(true)}>클래스 변경하기</Btn>
           </React.Fragment>:<React.Fragment>
             <span style={{fontSize:12,color:'#8A8A96',fontWeight:600}}>⏳ 미확정</span>
             <div style={{fontSize:17,fontWeight:800,color:'#1B1B22',margin:'8px 0 10px'}}>아직 클래스가 결정되지 않았어요</div>
             <div style={{fontSize:14,color:'#5A5A66'}}>{fmtDot(nextDate)}</div>
             <div style={{fontSize:14,color:'#5A5A66',marginTop:2}}>{days}일 후</div>
-            <Btn sx={{width:'100%',marginTop:14}} onClick={()=>go({t:'candidates'})}>후보 목록에서 선택하기</Btn>
+            <Btn sx={{width:'100%',marginTop:14}} onClick={()=>setPicking(true)}>후보 목록에서 선택하기</Btn>
           </React.Fragment>}
         </div>
       </div>
+
+      {/* 상세로 안 들어가고 목록에서 바로 확정 */}
+      {picking&&<Modal title={`${ymLabel(nextYM)} 클래스 선택`} onClose={()=>setPicking(false)}>
+        {candidates.length===0
+          ?<Empty title="후보가 없어요." sub="먼저 클래스 후보를 등록해주세요."
+             action={<Btn sx={{width:'100%'}} onClick={()=>{setPicking(false);go({t:'candidates',add:true});}}>클래스 추가하기</Btn>}/>
+          :<React.Fragment>
+            <div style={{fontSize:12,color:'#A6A6B2',marginBottom:12}}>득표수 높은 순이에요. 누르면 바로 확정됩니다.</div>
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {[...candidates].sort((a,b)=>calcScore(b)-calcScore(a)).map(c=>{
+                const on=confirmed[nextYM]===c.id;
+                return(
+                  <button key={c.id} onClick={()=>{onConfirm(nextYM,c.id);setPicking(false);}}
+                    style={{width:'100%',textAlign:'left',fontFamily:'inherit',cursor:'pointer',borderRadius:12,padding:'12px 14px',background:on?'#F1EFFE':'#FAFAFC',border:on?'1.5px solid #6C5CE7':'1.5px solid #EFEFF3'}}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}>
+                      <div style={{minWidth:0}}>
+                        <Chip cat={c.cat}/>
+                        <div style={{fontSize:15,fontWeight:800,color:'#1B1B22',margin:'3px 0'}}>{c.name}</div>
+                        <div style={{fontSize:12,color:'#8A8A96'}}>{won(c.price)}{c.address?` · ${c.address}`:''}</div>
+                      </div>
+                      <div style={{flexShrink:0,textAlign:'right'}}>
+                        <div style={{fontSize:12,fontWeight:800,color:'#5A5A66'}}>{calcScore(c)}점</div>
+                        {on&&<div style={{fontSize:12,color:'#6C5CE7',fontWeight:800,marginTop:2}}>✓ 확정</div>}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            {confirmed[nextYM]&&<Btn v="gray" sx={{width:'100%',marginTop:12}}
+              onClick={()=>{onConfirm(nextYM,confirmed[nextYM]);setPicking(false);}}>확정 취소하기</Btn>}
+          </React.Fragment>}
+      </Modal>}
 
       {/* 투표 현황 */}
       <div className="sec">
@@ -616,7 +729,7 @@ function HomeTab({candidates,records,confirmed,me,go}){
             <div style={{fontSize:15,fontWeight:700,color:'#1B1B22',marginTop:6}}>{past.name}</div>
             <div className="divider"/>
             {latestImp
-              ?<ImpressionItem imp={latestImp} me={me} compact/>
+              ?<ImpressionItem imp={latestImp} me={me} profiles={profiles} compact/>
               :<Empty title="아직 소감을 남기지 않으셨네요!" sub="소감을 공유해 주세요"
                  action={<Btn sx={{width:'100%'}} onClick={()=>go({t:'record',id:past.id,imp:true})}>소감 남기러 가기</Btn>}/>}
           </div>}
@@ -672,7 +785,7 @@ function RecordsTab({records,candidates,onSave,go,openAdd,onAddClosed}){
 }
 
 /* ── 다녀온 상세 ─────────────────────────────────────────────── */
-function RecordDetail({rec,onUpdate,me,openImp}){
+function RecordDetail({rec,onUpdate,me,profiles,openImp}){
   const [showEdit,setShowEdit]=useState(false);
   const [showImpForm,setShowImpForm]=useState(!!openImp);
   const [partyDraft,setPartyDraft]=useState(null);
@@ -724,10 +837,10 @@ function RecordDetail({rec,onUpdate,me,openImp}){
     });
   }
   // 로그인 도입 전 소감(uid 없음)을 내 계정에 연결
+  // uid만 붙이면 표시 이름은 계정 프로필에서 자동으로 따라온다
   function claimImp(imp){
-    if(!confirm(`"${imp.author}" 이름으로 쓴 이 소감을 내 계정(${me.name})에 연결할까요?`))return;
-    const rename=imp.author!==me.name&&confirm(`작성자 표시도 "${me.name}"으로 바꿀까요?\n\n취소를 누르면 "${imp.author}" 그대로 표시됩니다.`);
-    patchImp(imp.id,i=>({...i,uid:me.uid,author:rename?me.name:i.author}));
+    if(!confirm(`"${imp.author}" 이름으로 쓴 이 소감을 내 계정(${me.name})에 연결할까요?\n연결하면 작성자가 "${me.name}"으로 표시됩니다.`))return;
+    patchImp(imp.id,i=>({...i,uid:me.uid}));
   }
 
   // 뒷풀이
@@ -787,7 +900,7 @@ function RecordDetail({rec,onUpdate,me,openImp}){
           ?<div style={{fontSize:13,color:'#A6A6B2',textAlign:'center',padding:'14px 0'}}>첫 소감을 남겨주세요!</div>
           :impressions.map((imp,i)=>(
             <div key={imp.id}>{i>0||showImpForm?<div className="divider"/>:null}
-              <ImpressionItem imp={imp} me={me} onLike={likeImp} onDelete={delImpression} onClaim={claimImp} compact/>
+              <ImpressionItem imp={imp} me={me} profiles={profiles} onLike={likeImp} onDelete={delImpression} onClaim={claimImp} compact/>
             </div>
           ))}
       </div>
@@ -813,7 +926,7 @@ function RecordDetail({rec,onUpdate,me,openImp}){
 }
 
 /* ═══════════════════ 다음 활동 후보 ═══════════════════════════ */
-function CandidatesTab({candidates,confirmed,onSave,go,me,openAdd,onAddClosed}){
+function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,openAdd,onAddClosed}){
   const [desc,setDesc]=useState(true);
   const [showAdd,setShowAdd]=useState(false);
   useEffect(()=>{if(openAdd){setShowAdd(true);onAddClosed&&onAddClosed();}},[openAdd]);
@@ -838,6 +951,7 @@ function CandidatesTab({candidates,confirmed,onSave,go,me,openAdd,onAddClosed}){
                 <div style={{fontSize:16,fontWeight:800,color:'#1B1B22',margin:'6px 0 8px'}}>{c.name}</div>
                 <div style={{fontSize:13,color:'#5A5A66',marginBottom:4}}>💰 {won(c.price)}</div>
                 <div style={{fontSize:13,color:'#5A5A66'}}>👍 추천수 {calcScore(c)}개 <span style={{color:'#A6A6B2'}}>· {voterCount(c)}명 참여</span></div>
+                {(c.addedByUid||c.addedBy)&&<div style={{fontSize:12,color:'#A6A6B2',marginTop:4}}>등록 · {nameOf(profiles,c.addedByUid,c.addedBy)}</div>}
               </div>
             ))}
           </div>}
@@ -851,20 +965,33 @@ function CandidatesTab({candidates,confirmed,onSave,go,me,openAdd,onAddClosed}){
 }
 
 /* ── 후보 상세 ───────────────────────────────────────────────── */
-function CandidateDetail({cand,onUpdate,me}){
+function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles}){
   const [showEdit,setShowEdit]=useState(false);
+  const nextYM=toYM(getNextClassDate());
+  const isConfirmed=(confirmed||{})[nextYM]===cand.id;
   const votes=getVotes(cand);
   const myVote=votes[me.uid]?votes[me.uid].k:null;
   const links=getLinks(cand);
+  const mine=cand.addedByUid?cand.addedByUid===me.uid:false;
+  // 익명 투표: 이름은 저장하지 않고 uid만 키로 쓴다 (본인 수정·취소용)
   function castVote(key){
-    onUpdate({...cand,votes:{...(cand.votes||{}),[me.uid]:{k:key,name:me.name}}});
+    onUpdate({...cand,votes:{...(cand.votes||{}),[me.uid]:{k:key}}});
+  }
+  function cancelVote(){
+    const next={...(cand.votes||{})};delete next[me.uid];
+    onUpdate({...cand,votes:next});
   }
   return(
     <React.Fragment>
       <div style={{...CS,marginBottom:12}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:12}}>
           <Chip cat={cand.cat}/>
-          <SmallBtn onClick={()=>setShowEdit(true)}>✏️ 수정</SmallBtn>
+          <div style={{display:'flex',gap:6}}>
+            <SmallBtn onClick={()=>setShowEdit(true)}>✏️ 수정</SmallBtn>
+            {/* 후보는 등록한 본인만 삭제 가능 */}
+            {mine&&<SmallBtn sx={{background:'#FEF2F2',color:'#E5484D'}}
+              onClick={()=>{if(confirm(`"${cand.name}" 후보를 삭제할까요?\n투표 내용도 함께 사라집니다.`))onDelete(cand);}}>🗑 삭제</SmallBtn>}
+          </div>
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:9}}>
           <div style={{fontSize:14,color:'#3A3A44'}}><b style={{fontWeight:700}}>금액:</b> {won(cand.price)}</div>
@@ -873,34 +1000,38 @@ function CandidateDetail({cand,onUpdate,me}){
             <div style={{fontSize:14,fontWeight:700,color:'#1B1B22',marginBottom:5}}>활동 내용</div>
             <div style={{fontSize:13,color:'#5A5A66',lineHeight:1.7,whiteSpace:'pre-line'}}>{cand.activity}</div>
           </div>}
-          {cand.addedBy&&<div style={{fontSize:12,color:'#A6A6B2'}}>by {cand.addedBy}</div>}
+          {(cand.addedByUid||cand.addedBy)&&<div style={{fontSize:12,color:'#A6A6B2'}}>등록 · {nameOf(profiles,cand.addedByUid,cand.addedBy)}</div>}
         </div>
+        <Btn v={isConfirmed?'out':'pri'} sx={{width:'100%',marginTop:14}} onClick={()=>onConfirm(nextYM,cand.id)}>
+          {isConfirmed?`✓ ${ymLabel(nextYM)} 클래스로 확정됨 (누르면 해제)`:`${ymLabel(nextYM)} 클래스로 확정하기`}
+        </Btn>
       </div>
 
+      {/* 투표: 익명 · 언제든 변경 가능 · 투표 전에도 결과 공개 */}
       <div style={CS}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:4}}>
           <span style={{fontSize:14,fontWeight:800,color:'#1B1B22'}}>투표</span>
-          <span style={{fontSize:12,color:'#8A8A96',fontWeight:700}}>득표수 {calcScore(cand)} · {voterCount(cand)}명</span>
+          <span style={{fontSize:12,color:'#8A8A96',fontWeight:700}}>득표수 {calcScore(cand)} · {voterCount(cand)}명 참여</span>
         </div>
+        <div style={{fontSize:12,color:'#A6A6B2',marginBottom:14}}>익명 투표예요. 누른 뒤에도 언제든 바꿀 수 있어요.</div>
         <div style={{display:'flex',flexDirection:'column',gap:8}}>
           {VOPTS.map(o=>{
             const isMe=myVote===o.k;
-            const voters=Object.values(votes).filter(v=>v.k===o.k);
+            const cnt=Object.values(votes).filter(v=>v.k===o.k).length;
+            const total=voterCount(cand);
+            const pct=total?Math.round(cnt/total*100):0;
             return(
-              <button key={o.k} onClick={()=>castVote(o.k)} style={{width:'100%',display:'flex',alignItems:'center',gap:10,padding:'12px 14px',borderRadius:10,cursor:'pointer',fontFamily:'inherit',textAlign:'left',border:isMe?`1.5px solid ${o.color}`:'1.5px solid #EFEFF3',background:isMe?'#FAFAFC':'#fff'}}>
-                <span style={{fontSize:17,flexShrink:0}}>{o.e}</span>
-                <span style={{flex:1,fontSize:14,fontWeight:isMe?800:600,color:isMe?o.color:'#3A3A44'}}>{o.label}</span>
-                {voters.length>0&&<span style={{fontSize:12,color:'#8A8A96',fontWeight:700,flexShrink:0}}>{voters.length}명</span>}
+              <button key={o.k} onClick={()=>castVote(o.k)} style={{position:'relative',overflow:'hidden',width:'100%',display:'flex',alignItems:'center',gap:10,padding:'12px 14px',borderRadius:10,cursor:'pointer',fontFamily:'inherit',textAlign:'left',border:isMe?`1.5px solid ${o.color}`:'1.5px solid #EFEFF3',background:'#fff'}}>
+                {/* 결과 미리보기: 투표 여부와 상관없이 항상 보여준다 */}
+                <span style={{position:'absolute',left:0,top:0,bottom:0,width:`${pct}%`,background:isMe?'#F1EFFE':'#F5F5F8',transition:'width .25s'}}/>
+                <span style={{position:'relative',fontSize:17,flexShrink:0}}>{o.e}</span>
+                <span style={{position:'relative',flex:1,fontSize:14,fontWeight:isMe?800:600,color:isMe?o.color:'#3A3A44'}}>{o.label}</span>
+                <span style={{position:'relative',fontSize:12,color:cnt?'#5A5A66':'#C4C4CC',fontWeight:700,flexShrink:0}}>{cnt}명</span>
               </button>
             );
           })}
         </div>
-        {voterCount(cand)>0&&<div style={{marginTop:14,paddingTop:12,borderTop:'1px solid #EFEFF3'}}>
-          {VOPTS.map(o=>{
-            const vs=Object.values(votes).filter(v=>v.k===o.k).map(v=>v.name);
-            return vs.length?<div key={o.k} style={{display:'flex',gap:6,marginBottom:5,fontSize:12,color:'#8A8A96'}}><span>{o.e}</span><span>{vs.join(', ')}</span></div>:null;
-          })}
-        </div>}
+        {myVote&&<button onClick={cancelVote} style={{marginTop:12,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:700,color:'#8A8A96',padding:0}}>내 투표 취소하기</button>}
       </div>
 
       {showEdit&&<EditCandidateModal cand={cand} onSave={u=>{onUpdate(u);setShowEdit(false);}} onClose={()=>setShowEdit(false)}/>}
@@ -917,11 +1048,13 @@ function CatPicker({value,onChange}){
 }
 
 function AddCandidateModal({me,onAdd,onClose}){
-  const [f,setF]=useState({name:'',cat:'',activity:'',price:'',address:'',naverUrl:'',kakaoUrl:'',addedBy:me?me.name:''});
+  const [f,setF]=useState({name:'',cat:'',activity:'',price:'',address:'',naverUrl:'',kakaoUrl:''});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));
   function submit(){
     if(!f.name.trim()){alert('클래스 이름을 입력해주세요');return;}
-    onAdd({id:uid(),...f,name:f.name.trim(),price:f.price?Number(String(f.price).replace(/,/g,'')):0,votes:{},addedAt:Date.now()});
+    // 작성자는 입력받지 않고 로그인 계정으로 기록 (표시 이름은 프로필에서 끌어옴)
+    onAdd({id:uid(),...f,name:f.name.trim(),price:f.price?Number(String(f.price).replace(/,/g,'')):0,
+      votes:{},addedByUid:me.uid,addedBy:me.name,addedAt:Date.now()});
     onClose();
   }
   return(
@@ -930,11 +1063,9 @@ function AddCandidateModal({me,onAdd,onClose}){
         <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)} placeholder="예: 홍대 도자기 공방"/>
         <CatPicker value={f.cat} onChange={v=>set('cat',v)}/>
         <PlaceFields v={f} onChange={nv=>setF(p=>({...p,...nv}))} onName={n=>setF(p=>p.name?p:{...p,name:n})}/>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-          <FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} placeholder="45000" type="number"/>
-          <FI label="추가한 사람" value={f.addedBy} onChange={e=>set('addedBy',e.target.value)} placeholder="닉네임"/>
-        </div>
+        <FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} placeholder="45000" type="number"/>
         <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)} placeholder="어떤 활동을 하는지 적어주세요"/>
+        <div style={{fontSize:12,color:'#A6A6B2'}}>등록자는 <b style={{color:'#5A5A66'}}>{me.name}</b> 으로 기록돼요</div>
         <div style={{display:'flex',gap:10,marginTop:4}}><Btn sx={{flex:1}} onClick={submit}>추가하기</Btn><Btn v="gray" onClick={onClose}>취소</Btn></div>
       </div>
     </Modal>
@@ -942,7 +1073,7 @@ function AddCandidateModal({me,onAdd,onClose}){
 }
 
 function EditCandidateModal({cand,onSave,onClose}){
-  const [f,setF]=useState({name:cand.name||'',cat:cand.cat||'',activity:cand.activity||'',price:cand.price||'',address:cand.address||'',...getLinks(cand),addedBy:cand.addedBy||''});
+  const [f,setF]=useState({name:cand.name||'',cat:cand.cat||'',activity:cand.activity||'',price:cand.price||'',address:cand.address||'',...getLinks(cand)});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));
   function submit(){
     if(!f.name.trim()){alert('클래스 이름을 입력해주세요');return;}
@@ -955,10 +1086,7 @@ function EditCandidateModal({cand,onSave,onClose}){
         <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)}/>
         <CatPicker value={f.cat} onChange={v=>set('cat',v)}/>
         <PlaceFields v={f} onChange={nv=>setF(p=>({...p,...nv}))}/>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-          <FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} type="number"/>
-          <FI label="추가한 사람" value={f.addedBy} onChange={e=>set('addedBy',e.target.value)}/>
-        </div>
+        <FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} type="number"/>
         <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)}/>
         <div style={{display:'flex',gap:10,marginTop:4}}><Btn sx={{flex:1}} onClick={submit}>저장하기</Btn><Btn v="gray" onClick={onClose}>취소</Btn></div>
       </div>
@@ -1073,21 +1201,62 @@ function EditRecordModal({rec,onSave,onClose}){
 }
 
 /* ── 로그인 화면 ─────────────────────────────────────────────── */
-function LoginScreen(){
+function LoginScreen({initialError}){
   const [busy,setBusy]=useState(false);
+  const [inApp,setInApp]=useState(IN_APP_BROWSER);
+  const [err,setErr]=useState(initialError||'');
+  const [copied,setCopied]=useState(false);
+
+  async function go(){
+    setBusy(true);setErr('');
+    const r=await signIn();
+    setBusy(false);
+    if(r.inApp) setInApp(true);
+    else if(r.err) setErr(r.err);
+  }
+  function copyLink(){
+    const t=location.href;
+    if(navigator.clipboard) navigator.clipboard.writeText(t).then(()=>setCopied(true)).catch(()=>{});
+    else { const el=document.createElement('textarea');el.value=t;document.body.appendChild(el);el.select();document.execCommand('copy');el.remove();setCopied(true); }
+  }
+  const intentUrl=externalBrowserUrl();
+
   return(
     <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:24}}>
       <div style={{...CS,width:'100%',maxWidth:360,textAlign:'center',padding:'34px 24px'}}>
         <div style={{fontSize:40,marginBottom:14}}>🎨</div>
         <div style={{fontSize:20,fontWeight:800,color:'#1B1B22',marginBottom:8}}>원데이 클래스 동아리</div>
-        <p style={{fontSize:13,color:'#8A8A96',lineHeight:1.7,marginBottom:24}}>
-          동아리 기록과 투표를 보려면<br/>구글 계정으로 로그인해주세요.
-        </p>
-        <button onClick={async()=>{setBusy(true);await signIn();setBusy(false);}} disabled={busy}
-          style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:9,padding:'13px 18px',borderRadius:10,border:'1.5px solid #E4E4EC',background:'#fff',cursor:busy?'default':'pointer',fontFamily:'inherit',fontSize:14,fontWeight:700,color:'#3A3A44'}}>
-          <svg width="17" height="17" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.7 30.2.5 24 .5 14.6.5 6.5 5.9 2.6 13.7l7.8 6.1C12.3 13.9 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.9 24.5c0-1.6-.1-2.8-.4-4.1H24v7.9h13.1c-.3 2.2-1.7 5.5-4.9 7.7l7.6 5.9c4.5-4.2 7.1-10.3 7.1-17.4z"/><path fill="#FBBC05" d="M10.4 28.2c-.5-1.5-.8-3-.8-4.7s.3-3.2.8-4.7l-7.8-6.1C.9 16.1 0 19.9 0 23.5s.9 7.4 2.6 10.8l7.8-6.1z"/><path fill="#34A853" d="M24 47.5c6.5 0 11.9-2.1 15.8-5.8l-7.6-5.9c-2 1.4-4.8 2.4-8.2 2.4-6.4 0-11.7-4.4-13.6-10.3l-7.8 6.1C6.5 42.1 14.6 47.5 24 47.5z"/></svg>
-          {busy?'로그인 중...':'구글로 시작하기'}
-        </button>
+
+        {inApp?<React.Fragment>
+          <div style={{background:'#FFFBEB',border:'1.5px solid #FDE68A',borderRadius:12,padding:'14px 16px',margin:'12px 0 18px',textAlign:'left'}}>
+            <div style={{fontSize:13,fontWeight:800,color:'#92400E',marginBottom:6}}>앱 안에서는 구글 로그인이 막혀요</div>
+            <div style={{fontSize:12,color:'#92400E',lineHeight:1.7}}>
+              구글 정책상 카카오톡·인스타그램 같은 앱 내 브라우저에서는 로그인이 되지 않아요.
+              <b> 크롬이나 사파리로 열어주세요.</b>
+              {IS_ANDROID
+                ? <><br/>아래 버튼을 누르거나, 우측 하단 ⋮ → "다른 브라우저로 열기"</>
+                : <><br/>우측 하단 <b>⤴︎</b> → "Safari로 열기"를 눌러주세요.</>}
+            </div>
+          </div>
+          {intentUrl&&<a href={intentUrl} style={{display:'block',textDecoration:'none',marginBottom:8}}>
+            <Btn sx={{width:'100%'}}>크롬으로 열기</Btn>
+          </a>}
+          <Btn v="gray" sx={{width:'100%'}} onClick={copyLink}>{copied?'주소를 복사했어요':'주소 복사하기'}</Btn>
+          <button onClick={go} style={{marginTop:12,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,color:'#A6A6B2',textDecoration:'underline'}}>그래도 로그인 시도해보기</button>
+        </React.Fragment>:<React.Fragment>
+          <p style={{fontSize:13,color:'#8A8A96',lineHeight:1.7,marginBottom:24}}>
+            동아리 기록과 투표를 보려면<br/>구글 계정으로 로그인해주세요.
+          </p>
+          <button onClick={go} disabled={busy}
+            style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:9,padding:'13px 18px',borderRadius:10,border:'1.5px solid #E4E4EC',background:'#fff',cursor:busy?'default':'pointer',fontFamily:'inherit',fontSize:14,fontWeight:700,color:'#3A3A44'}}>
+            <svg width="17" height="17" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.7 30.2.5 24 .5 14.6.5 6.5 5.9 2.6 13.7l7.8 6.1C12.3 13.9 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.9 24.5c0-1.6-.1-2.8-.4-4.1H24v7.9h13.1c-.3 2.2-1.7 5.5-4.9 7.7l7.6 5.9c4.5-4.2 7.1-10.3 7.1-17.4z"/><path fill="#FBBC05" d="M10.4 28.2c-.5-1.5-.8-3-.8-4.7s.3-3.2.8-4.7l-7.8-6.1C.9 16.1 0 19.9 0 23.5s.9 7.4 2.6 10.8l7.8-6.1z"/><path fill="#34A853" d="M24 47.5c6.5 0 11.9-2.1 15.8-5.8l-7.6-5.9c-2 1.4-4.8 2.4-8.2 2.4-6.4 0-11.7-4.4-13.6-10.3l-7.8 6.1C6.5 42.1 14.6 47.5 24 47.5z"/></svg>
+            {busy?'로그인 중...':'구글로 시작하기'}
+          </button>
+        </React.Fragment>}
+
+        {err&&<div style={{marginTop:14,background:'#FEF2F2',borderRadius:10,padding:'10px 12px',fontSize:11,color:'#B42318',lineHeight:1.6,textAlign:'left',wordBreak:'break-all'}}>
+          로그인 실패: {err}
+        </div>}
       </div>
     </div>
   );
@@ -1130,11 +1299,14 @@ function App(){
   const [loading,setLoading]=useState(true);
   const [showProfile,setShowProfile]=useState(false);
   const [denied,setDenied]=useState(false);
+  const [authError,setAuthError]=useState('');
   const [pendingAdd,setPendingAdd]=useState(null);
 
   // 로그인 상태 감시 (브라우저에 영구 저장되어 재방문해도 유지됨)
   useEffect(()=>{
     if(!auth){setUser(null);return;}
+    // 리다이렉트 방식으로 돌아온 경우의 실패는 여기서만 확인 가능
+    consumeRedirectError().then(e=>{if(e)setAuthError(e);});
     return auth.onAuthStateChanged(u=>setUser(u||null));
   },[]);
 
@@ -1174,6 +1346,12 @@ function App(){
 
   async function saveCands(data){setCandidates(data);await fbSet('candidates',data);}
   async function saveRecs(data){setRecords(data);await fbSet('records',data);}
+  // 이번(다가오는) 달 클래스 확정 · 같은 후보를 다시 고르면 해제
+  async function confirmClass(ym,candId){
+    const next={...confirmed};
+    if(next[ym]===candId) delete next[ym]; else next[ym]=candId;
+    setConfirmed(next);await fbSet('confirmed',next);
+  }
 
   function go(next){
     if(next.add){setPendingAdd(next.t);setView({t:next.t});return;}
@@ -1190,7 +1368,7 @@ function App(){
 
   const spinner=<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:'#A6A6B2',fontSize:14}}>불러오는 중...</div>;
   if(user===undefined) return spinner;
-  if(user===null) return <LoginScreen/>;
+  if(user===null) return <LoginScreen initialError={authError}/>;
   if(denied) return(
     <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:24}}>
       <div style={{...CS,width:'100%',maxWidth:360,textAlign:'center',padding:'34px 24px'}}>
@@ -1230,16 +1408,18 @@ function App(){
       </div>
 
       <div className="main">
-        {view.t==='home'&&<HomeTab candidates={candidates} records={records} confirmed={confirmed} me={me} go={go}/>}
+        {view.t==='home'&&<HomeTab candidates={candidates} records={records} confirmed={confirmed} me={me} profiles={profiles} go={go} onConfirm={confirmClass}/>}
         {view.t==='records'&&<RecordsTab records={records} candidates={candidates} onSave={saveRecs} go={go}
           openAdd={pendingAdd==='records'} onAddClosed={()=>setPendingAdd(null)}/>}
-        {view.t==='candidates'&&<CandidatesTab candidates={candidates} confirmed={confirmed} onSave={saveCands} go={go} me={me}
+        {view.t==='candidates'&&<CandidatesTab candidates={candidates} confirmed={confirmed} onSave={saveCands} go={go} me={me} profiles={profiles}
           openAdd={pendingAdd==='candidates'} onAddClosed={()=>setPendingAdd(null)}/>}
         {view.t==='record'&&<div className="detail-wrap">{rec
-          ?<RecordDetail rec={rec} me={me} openImp={view.imp} onUpdate={u=>saveRecs(records.map(r=>r.id===u.id?u:r))}/>
+          ?<RecordDetail rec={rec} me={me} profiles={profiles} openImp={view.imp} onUpdate={u=>saveRecs(records.map(r=>r.id===u.id?u:r))}/>
           :<Empty title="기록을 찾을 수 없어요."/>}</div>}
         {view.t==='cand'&&<div className="detail-wrap">{cand
-          ?<CandidateDetail cand={cand} me={me} onUpdate={u=>saveCands(candidates.map(c=>c.id===u.id?u:c))}/>
+          ?<CandidateDetail cand={cand} me={me} profiles={profiles} confirmed={confirmed} onConfirm={confirmClass}
+             onUpdate={u=>saveCands(candidates.map(c=>c.id===u.id?u:c))}
+             onDelete={c=>{saveCands(candidates.filter(x=>x.id!==c.id));back();}}/>
           :<Empty title="후보를 찾을 수 없어요."/>}</div>}
       </div>
 
