@@ -536,7 +536,7 @@ function extractMapUrls(text){
 // 주소를 찾을 때 URL 조각이 섞이지 않도록 제거
 const stripUrls=t=>String(t||'').replace(RE_MAP_URL,' ').replace(/https?:\/\/\S+/gi,' ');
 
-function PlaceFields({v,onChange,onName}){
+function PlaceFields({v,onChange,onName,nameHint}){
   const [raw,setRaw]=useState('');
   const [fetching,setFetching]=useState(false);
   const [err,setErr]=useState('');
@@ -573,22 +573,27 @@ function PlaceFields({v,onChange,onName}){
       onChange({...cur,address:info.address});
       setNote('주소를 자동으로 넣었어요. 틀리면 고쳐주세요.');
     }else{
-      const naverOnly=!urls.some(isKakaoUrl);
-      setNote(naverOnly
-        ? (KAKAO_REST_KEY
-            ? '네이버는 자동 조회를 막고 있어요. 아래에서 장소명으로 검색해 주소를 채워주세요.'
-            : '네이버는 자동 조회를 막고 있어요. 링크를 열어 주소를 복사해 붙여넣어 주세요.')
-        : '주소를 못 찾았어요. 직접 입력하거나 장소명으로 검색해주세요.');
-      if(naverOnly&&!q) setQ(cur.name||'');
-      if(addrRef.current) addrRef.current.focus();
+      // 3) 네이버는 조회가 막혀 있으니, 이미 입력한 이름으로 곧바로 검색해준다
+      const hint=String(nameHint||'').trim();
+      if(KAKAO_REST_KEY&&hint){
+        setQ(hint);
+        await doSearch(hint,`'${hint}'로 찾은 결과예요. 맞는 곳을 골라주세요.`);
+      }else if(KAKAO_REST_KEY){
+        setNote('장소명을 입력하면 주소를 찾아드릴게요.');
+        if(addrRef.current) addrRef.current.focus();
+      }else{
+        setNote('주소는 직접 입력해주세요.');
+        if(addrRef.current) addrRef.current.focus();
+      }
     }
     if(info.ok&&info.name&&onName) onName(info.name);
   }
 
-  async function doSearch(){
-    if(!q.trim())return;
-    setSearching(true);setResults(null);
-    const r=await searchPlaces(q);
+  async function doSearch(query,okNote){
+    const term=String(query!==undefined?query:q).trim();
+    if(!term)return;
+    setSearching(true);setResults(null);setNote('');
+    const r=await searchPlaces(term);
     setSearching(false);
     if(!r.ok){
       setResults([]);
@@ -598,7 +603,9 @@ function PlaceFields({v,onChange,onName}){
       return;
     }
     setResults(r.items);
-    if(!r.items.length) setNote('검색 결과가 없어요. 가게 이름을 바꿔서 찾아보세요.');
+    setNote(r.items.length
+      ? (okNote||'')
+      : `'${term}' 검색 결과가 없어요. 이름을 바꿔서 찾아보세요.`);
   }
   function pick(item){
     const cur=vRef.current;
@@ -648,7 +655,7 @@ function PlaceFields({v,onChange,onName}){
           <input style={{...IS,flex:1}} value={q} onChange={e=>setQ(e.target.value)}
             onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();doSearch();}}}
             placeholder="가게 이름 (예: 우리예술)"/>
-          <Btn v="gray" sx={{padding:'10px 16px'}} onClick={doSearch} disabled={searching}>{searching?'검색 중':'검색'}</Btn>
+          <Btn v="gray" sx={{padding:'10px 16px'}} onClick={()=>doSearch()} disabled={searching}>{searching?'검색 중':'검색'}</Btn>
         </div>
         {results&&results.length>0&&<div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:210,overflowY:'auto'}}>
           {results.map((r,i)=>(
@@ -782,7 +789,7 @@ function PartyEditor({p,index,onChange,onRemove}){
       </div>
       <div style={{display:'flex',flexDirection:'column',gap:10}}>
         <FI label="장소명" value={p.name||''} onChange={e=>set('name',e.target.value)} placeholder="예: 우리예술"/>
-        <PlaceFields v={p} onChange={nv=>onChange({...p,...nv})} onName={n=>{if(!p.name)set('name',n);}}/>
+        <PlaceFields nameHint={p.name} v={p} onChange={nv=>onChange({...p,...nv})} onName={n=>{if(!p.name)set('name',n);}}/>
         <FT label="먹은 메뉴" rows={2} value={p.menu||''} onChange={e=>set('menu',e.target.value)} placeholder="예: 감자전, 도토리묵, 막걸리 3병"/>
         <div>
           <div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>사진</div>
@@ -1383,7 +1390,7 @@ function AddCandidateModal({me,onAdd,onClose}){
       <div style={{display:'flex',flexDirection:'column',gap:14}}>
         <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)} placeholder="예: 홍대 도자기 공방"/>
         <CatPicker value={f.cat} onChange={v=>set('cat',v)}/>
-        <PlaceFields v={f} onChange={nv=>setF(p=>({...p,...nv}))} onName={n=>setF(p=>p.name?p:{...p,name:n})}/>
+        <PlaceFields nameHint={f.name} v={f} onChange={nv=>setF(p=>({...p,...nv}))} onName={n=>setF(p=>p.name?p:{...p,name:n})}/>
         <FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} placeholder="45000" type="number"/>
         <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)} placeholder="어떤 활동을 하는지 적어주세요"/>
         <div style={{fontSize:12,color:'#A6A6B2'}}>등록자는 <b style={{color:'#5A5A66'}}>{me.name}</b> 으로 기록돼요</div>
@@ -1406,7 +1413,7 @@ function EditCandidateModal({cand,onSave,onClose}){
       <div style={{display:'flex',flexDirection:'column',gap:14}}>
         <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)}/>
         <CatPicker value={f.cat} onChange={v=>set('cat',v)}/>
-        <PlaceFields v={f} onChange={nv=>setF(p=>({...p,...nv}))}/>
+        <PlaceFields nameHint={f.name} v={f} onChange={nv=>setF(p=>({...p,...nv}))}/>
         <FI label="금액 (1인, 원)" value={f.price} onChange={e=>set('price',e.target.value)} type="number"/>
         <FT label="활동 내용" value={f.activity} onChange={e=>set('activity',e.target.value)}/>
         <div style={{display:'flex',gap:10,marginTop:4}}><Btn sx={{flex:1}} onClick={submit}>저장하기</Btn><Btn v="gray" onClick={onClose}>취소</Btn></div>
@@ -1435,7 +1442,7 @@ function RecordFormBody({f,setF,photos,setPhotos,thumb,setThumb,afterParties,set
     <React.Fragment>
       <FI label="클래스 이름 *" value={f.name} onChange={e=>set('name',e.target.value)} placeholder="예: 홍대 도자기 공방"/>
       <CatPicker value={f.cat} onChange={v=>set('cat',v)}/>
-      <PlaceFields v={f} onChange={nv=>setF(p=>({...p,...nv}))} onName={n=>setF(p=>p.name?p:{...p,name:n})}/>
+      <PlaceFields nameHint={f.name} v={f} onChange={nv=>setF(p=>({...p,...nv}))} onName={n=>setF(p=>p.name?p:{...p,name:n})}/>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
         <div><label style={{fontSize:12,fontWeight:700,color:'#6B7280',display:'block',marginBottom:5}}>날짜</label>
           <input type="date" value={f.date} onChange={e=>{const d=e.target.value;set('date',d);set('month',d.slice(0,7));}} style={IS}/></div>
