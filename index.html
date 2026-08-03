@@ -44,11 +44,12 @@ img{max-width:100%}
   .nav-tab{font-size:16px}
   .main{max-width:1120px;margin:0 auto;padding:28px 32px 64px}
   .card-grid{grid-template-columns:repeat(2,1fr);gap:16px}
-  /* 모바일 DOM 순서(다가오는→투표→소감)는 유지한 채 데스크톱만 2단 배치 */
+  /* 모바일 DOM 순서는 유지한 채 데스크톱만 2단 배치.
+     섹션이 늘거나(방명록) 등급에 따라 빠져도(객원=지난소감 숨김) 안 깨지도록
+     위치를 순서가 아닌 역할 클래스로 지정한다. */
   .home-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:28px;align-items:start}
-  .home-grid>.sec:nth-child(1){grid-column:1;grid-row:1}
-  .home-grid>.sec:nth-child(2){grid-column:2;grid-row:1/span 2}
-  .home-grid>.sec:nth-child(3){grid-column:1;grid-row:2}
+  .home-grid>.sec{grid-column:1}
+  .home-grid>.sec-vote{grid-column:2;grid-row:1/span 99}
   .detail-wrap{max-width:760px;margin:0 auto}
   .photo-grid{grid-template-columns:repeat(4,1fr);gap:8px}
   .sec-t{font-size:16px}
@@ -404,7 +405,8 @@ function getAfterParties(rec){
 
 /* ── 활동 소감 정규화 (구버전 리뷰 흡수) ─────────────────────── */
 function getImpressions(rec){
-  const norm=i=>({id:i.id,uid:i.uid||'',author:i.author,text:i.text||'',rating:i.rating||0,photo:i.photo||null,likes:i.likes||[],createdAt:i.createdAt||0});
+  const norm=i=>({id:i.id,uid:i.uid||'',author:i.author,text:i.text||'',rating:i.rating||0,photo:i.photo||null,
+    likes:i.likes||[],replies:i.replies||[],editedAt:i.editedAt||0,createdAt:i.createdAt||0});
   return [...(rec.impressions||[]).map(norm),...(rec.reviews||[]).map(norm)].sort((a,b)=>b.createdAt-a.createdAt);
 }
 // 로그인 이전에 쌓인 소감은 uid가 없어 표시이름으로 대조
@@ -851,39 +853,90 @@ function PartyCard({p,index,onEdit,onDelete,me,profiles,onAddReview,onDelReview}
 }
 
 /* ── 소감 카드 ───────────────────────────────────────────────── */
-function ImpressionItem({imp,me,profiles,onLike,onDelete,onClaim,compact}){
+function ImpressionItem({imp,me,profiles,onLike,onDelete,onClaim,onEdit,onReply,onDelReply,compact}){
+  const [editing,setEditing]=useState(false);
+  const [replyOpen,setReplyOpen]=useState(false);
+  const [replyText,setReplyText]=useState('');
   const liked=!!me&&(imp.likes||[]).includes(me.uid);
   const mine=isMine(imp,me);
   const claimable=!imp.uid&&!!onClaim;   // 로그인 도입 전에 쌓인 소감
+  const replies=imp.replies||[];
+
+  function submitReply(){
+    const t=replyText.trim();
+    if(!t)return;
+    onReply(imp.id,{id:uid(),uid:me.uid,author:me.name,text:t,createdAt:Date.now()});
+    setReplyText('');setReplyOpen(false);
+  }
+
+  if(editing&&onEdit) return(
+    <div style={{paddingTop:compact?0:12}}>
+      <ImpressionForm me={me} initial={imp} onCancel={()=>setEditing(false)}
+        onSubmit={u=>{onEdit(u);setEditing(false);}}/>
+    </div>
+  );
+
   return(
     <div style={{paddingTop:compact?0:12}}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:8}}>
         <UserLine uid={imp.uid} fallbackName={imp.author} profiles={profiles}/>
         <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
-          <span style={{fontSize:12,color:'#A6A6B2'}}>{imp.createdAt?fmtDot(new Date(imp.createdAt)).slice(0,10):''}</span>
-          {onDelete&&mine&&<button onClick={()=>onDelete(imp.id)} title="내 소감 삭제" style={{background:'none',border:'none',cursor:'pointer',color:'#D6D6DE',fontSize:18,lineHeight:1,padding:'0 2px'}}>×</button>}
+          <span style={{fontSize:12,color:'#A6A6B2'}}>
+            {imp.createdAt?fmtDot(new Date(imp.createdAt)).slice(0,10):''}{imp.editedAt?' (수정됨)':''}
+          </span>
+          {onEdit&&mine&&<button onClick={()=>setEditing(true)} title="수정" style={{background:'none',border:'none',cursor:'pointer',fontSize:12,padding:'0 2px'}}>✏️</button>}
+          {onDelete&&mine&&<button onClick={()=>onDelete(imp.id)} title="삭제" style={{background:'none',border:'none',cursor:'pointer',color:'#D6D6DE',fontSize:18,lineHeight:1,padding:'0 2px'}}>×</button>}
         </div>
       </div>
       {imp.rating>0&&<div style={{marginBottom:8}}><Stars value={imp.rating} size={17}/></div>}
       <div style={{fontSize:14,color:'#3A3A44',lineHeight:1.65,whiteSpace:'pre-line'}}>{imp.text}</div>
       {imp.photo&&<Zoomable src={imp.photo} style={{width:'100%',maxHeight:220,objectFit:'cover',borderRadius:10,marginTop:10}}/>}
-      <div style={{display:'flex',alignItems:'center',gap:10,marginTop:10,flexWrap:'wrap'}}>
+
+      <div style={{display:'flex',alignItems:'center',gap:12,marginTop:10,flexWrap:'wrap'}}>
         <button onClick={()=>onLike&&onLike(imp.id)} disabled={!onLike}
           style={{background:'none',border:'none',padding:0,cursor:onLike?'pointer':'default',display:'inline-flex',alignItems:'center',gap:5,fontFamily:'inherit',fontSize:12,fontWeight:700,color:liked?'#E5484D':'#8A8A96'}}>
           <span style={{fontSize:14}}>{liked?'♥':'♡'}</span>{(imp.likes||[]).length.toLocaleString()}
         </button>
+        {onReply&&<button onClick={()=>setReplyOpen(o=>!o)}
+          style={{background:'none',border:'none',padding:0,cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:700,color:'#8A8A96'}}>
+          💬 답글{replies.length?` ${replies.length}`:''}
+        </button>}
         {claimable&&<button onClick={()=>onClaim(imp)}
           style={{background:'#F1EFFE',border:'none',borderRadius:20,padding:'4px 11px',fontSize:11,fontWeight:700,color:'#6C5CE7',cursor:'pointer',fontFamily:'inherit'}}>
           내가 쓴 소감이에요
         </button>}
       </div>
+
+      {/* 대댓글 — 정회원·객원멤버 모두 가능 */}
+      {(replies.length>0||replyOpen)&&<div style={{marginTop:10,paddingLeft:12,borderLeft:'2px solid #EFEFF3',display:'flex',flexDirection:'column',gap:10}}>
+        {replies.map(r=>(
+          <div key={r.id}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}>
+              <UserLine uid={r.uid} fallbackName={r.author} profiles={profiles} size={18}/>
+              <div style={{display:'flex',alignItems:'center',gap:5,flexShrink:0}}>
+                <span style={{fontSize:11,color:'#A6A6B2'}}>{r.createdAt?fmtDot(new Date(r.createdAt)).slice(5,10):''}</span>
+                {onDelReply&&me&&r.uid===me.uid&&<button onClick={()=>onDelReply(imp.id,r.id)} style={{background:'none',border:'none',cursor:'pointer',color:'#D6D6DE',fontSize:16,lineHeight:1,padding:0}}>×</button>}
+              </div>
+            </div>
+            <div style={{fontSize:13,color:'#3A3A44',lineHeight:1.6,marginTop:4}}>{r.text}</div>
+          </div>
+        ))}
+        {replyOpen&&<div style={{display:'flex',gap:6}}>
+          <input style={{...IS,flex:1}} value={replyText} autoFocus
+            onChange={e=>setReplyText(e.target.value)}
+            onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();submitReply();}}}
+            placeholder="답글을 남겨보세요"/>
+          <Btn v="gray" sx={{padding:'10px 14px'}} onClick={submitReply}>등록</Btn>
+        </div>}
+      </div>}
     </div>
   );
 }
 
 /* ── 소감 작성 폼 ────────────────────────────────────────────── */
-function ImpressionForm({me,onSubmit,onCancel}){
-  const [f,setF]=useState({rating:5,text:'',photo:null});
+function ImpressionForm({me,initial,onSubmit,onCancel}){
+  const editing=!!initial;
+  const [f,setF]=useState({rating:(initial&&initial.rating)||5,text:(initial&&initial.text)||'',photo:(initial&&initial.photo)||null});
   const [uploading,setUploading]=useState(false);
   async function handlePhoto(file){
     setUploading(true);
@@ -894,11 +947,13 @@ function ImpressionForm({me,onSubmit,onCancel}){
   }
   function submit(){
     if(!f.text.trim()){alert('소감을 작성해주세요');return;}
-    onSubmit({id:uid(),uid:me.uid,author:me.name,rating:f.rating||0,text:f.text.trim(),photo:f.photo||null,likes:[],createdAt:Date.now()});
+    onSubmit(editing
+      ? {...initial,rating:f.rating||0,text:f.text.trim(),photo:f.photo||null,editedAt:Date.now()}
+      : {id:uid(),uid:me.uid,author:me.name,rating:f.rating||0,text:f.text.trim(),photo:f.photo||null,likes:[],replies:[],createdAt:Date.now()});
   }
   return(
     <div style={{background:'#F7F7FA',borderRadius:12,padding:14,display:'flex',flexDirection:'column',gap:12}}>
-      <div style={{fontSize:12,color:'#8A8A96'}}><b style={{color:'#3A3A44'}}>{me.name}</b> 님으로 작성돼요</div>
+      <div style={{fontSize:12,color:'#8A8A96'}}>{editing?'소감을 수정합니다':<><b style={{color:'#3A3A44'}}>{me.name}</b> 님으로 작성돼요</>}</div>
       <div><div style={{fontSize:12,fontWeight:700,color:'#6B7280',marginBottom:8}}>별점</div><Stars value={f.rating} onChange={r=>setF(p=>({...p,rating:r}))} size={28}/></div>
       <FT placeholder="이번달 활동 어떠셨나요? 😊" rows={4} value={f.text} onChange={e=>setF(p=>({...p,text:e.target.value}))}/>
       <div style={{display:'flex',alignItems:'center',gap:10}}>
@@ -909,15 +964,56 @@ function ImpressionForm({me,onSubmit,onCancel}){
         </div>}
       </div>
       <div style={{display:'flex',gap:8}}>
-        <Btn sx={{flex:1}} onClick={submit}>등록</Btn>
+        <Btn sx={{flex:1}} onClick={submit} disabled={uploading}>{editing?'수정 저장':'등록'}</Btn>
         <Btn v="gray" onClick={onCancel}>취소</Btn>
       </div>
     </div>
   );
 }
 
+/* ── 방명록 (정회원·객원멤버 모두 작성 가능) ─────────────────── */
+function Guestbook({entries,me,profiles,onAdd,onDelete}){
+  const [text,setText]=useState('');
+  const [open,setOpen]=useState(false);
+  const list=[...(entries||[])].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  function submit(){
+    const t=text.trim();
+    if(!t)return;
+    onAdd({id:uid(),uid:me.uid,author:me.name,text:t,createdAt:Date.now()});
+    setText('');setOpen(false);
+  }
+  return(
+    <div style={CS}>
+      {open
+        ?<div style={{background:'#F7F7FA',borderRadius:12,padding:12,display:'flex',flexDirection:'column',gap:10,marginBottom:list.length?14:0}}>
+          <FT rows={3} value={text} onChange={e=>setText(e.target.value)} placeholder="자유롭게 한마디 남겨주세요 ✏️"/>
+          <div style={{display:'flex',gap:8}}>
+            <Btn sx={{flex:1}} onClick={submit}>남기기</Btn>
+            <Btn v="gray" onClick={()=>{setOpen(false);setText('');}}>취소</Btn>
+          </div>
+        </div>
+        :<Btn v="out" sx={{width:'100%',marginBottom:list.length?14:0}} onClick={()=>setOpen(true)}>✏️ 방명록 남기기</Btn>}
+
+      {list.length===0&&!open&&<div style={{fontSize:13,color:'#A6A6B2',textAlign:'center',padding:'16px 0 4px'}}>첫 방명록을 남겨주세요!</div>}
+      {list.map((g,i)=>(
+        <div key={g.id}>
+          {i>0&&<div className="divider"/>}
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:6}}>
+            <UserLine uid={g.uid} fallbackName={g.author} profiles={profiles} size={20}/>
+            <div style={{display:'flex',alignItems:'center',gap:5,flexShrink:0}}>
+              <span style={{fontSize:11,color:'#A6A6B2'}}>{g.createdAt?fmtDot(new Date(g.createdAt)).slice(0,10):''}</span>
+              {me&&g.uid===me.uid&&<button onClick={()=>onDelete(g.id)} style={{background:'none',border:'none',cursor:'pointer',color:'#D6D6DE',fontSize:17,lineHeight:1,padding:0}}>×</button>}
+            </div>
+          </div>
+          <div style={{fontSize:14,color:'#3A3A44',lineHeight:1.65,whiteSpace:'pre-line'}}>{g.text}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ═══════════════════ 홈 ═══════════════════════════════════════ */
-function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm}){
+function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestbook,onAddGuest,onDelGuest}){
   const [picking,setPicking]=useState(false);
   const nextDate=getNextClassDate();
   const nextYM=toYM(nextDate);
@@ -990,7 +1086,7 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm}){
       </Modal>}
 
       {/* 투표 현황 */}
-      <div className="sec">
+      <div className="sec sec-vote">
         <div className="sec-h"><span className="sec-t">다음달 원데이 클래스 투표 현황</span></div>
         {top3.length===0
           ?<div style={CS}><Empty title="활동 후보가 없어요." sub={isMember(me)?'체험하고 싶은 클래스 후보를 등록해주세요.':''}
@@ -1010,8 +1106,8 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm}){
           </div>}
       </div>
 
-      {/* 지난 활동 소감 */}
-      <div className="sec">
+      {/* 지난 활동 소감 — 객원멤버에게는 노출하지 않는다 */}
+      {isMember(me)&&<div className="sec">
         <div className="sec-h"><span className="sec-t">지난 원데이 클래스 활동 소감</span></div>
         {!past
           ?<div style={CS}><Empty title="아직 다녀온 클래스가 없어요." sub="첫 활동을 기록해보세요!"
@@ -1022,11 +1118,15 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm}){
             <div className="divider"/>
             {latestImp
               ?<ImpressionItem imp={latestImp} me={me} profiles={profiles} compact/>
-              :canWriteImp(me,past)
-                ?<Empty title="아직 소감을 남기지 않으셨네요!" sub="소감을 공유해 주세요"
-                   action={<Btn sx={{width:'100%'}} onClick={()=>go({t:'record',id:past.id,imp:true})}>소감 남기러 가기</Btn>}/>
-                :<Empty title="이 달에 남긴 소감이 없어요." sub="참여한 달에 받은 초대 링크로 들어오면 소감을 남길 수 있어요."/>}
+              :<Empty title="아직 소감을 남기지 않으셨네요!" sub="소감을 공유해 주세요"
+                 action={<Btn sx={{width:'100%'}} onClick={()=>go({t:'record',id:past.id,imp:true})}>소감 남기러 가기</Btn>}/>}
           </div>}
+      </div>}
+
+      {/* 방명록 — 등급 관계없이 누구나 */}
+      <div className="sec">
+        <div className="sec-h"><span className="sec-t">방명록</span></div>
+        <Guestbook entries={guestbook} me={me} profiles={profiles} onAdd={onAddGuest} onDelete={onDelGuest}/>
       </div>
     </div>
   );
@@ -1146,6 +1246,13 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
       return {...i,likes:likes.includes(me.uid)?likes.filter(n=>n!==me.uid):[...likes,me.uid]};
     });
   }
+  function editImp(updated){ patchImp(updated.id,()=>updated); }
+  // 대댓글 — 정회원·객원멤버 모두 가능
+  function addReply(impId,reply){ patchImp(impId,i=>({...i,replies:[...(i.replies||[]),reply]})); }
+  function delReply(impId,replyId){
+    if(!confirm('답글을 삭제할까요?'))return;
+    patchImp(impId,i=>({...i,replies:(i.replies||[]).filter(r=>r.id!==replyId)}));
+  }
   // 로그인 도입 전 소감(uid 없음)을 내 계정에 연결
   // uid만 붙이면 표시 이름은 계정 프로필에서 자동으로 따라온다
   function claimImp(imp){
@@ -1223,7 +1330,9 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
           ?<div style={{fontSize:13,color:'#A6A6B2',textAlign:'center',padding:'14px 0'}}>{mayWrite?'첫 소감을 남겨주세요!':'아직 소감이 없어요'}</div>
           :impressions.map((imp,i)=>(
             <div key={imp.id}>{i>0||showImpForm?<div className="divider"/>:null}
-              <ImpressionItem imp={imp} me={me} profiles={profiles} onLike={likeImp} onDelete={delImpression} onClaim={claimImp} compact/>
+              <ImpressionItem imp={imp} me={me} profiles={profiles} compact
+                onLike={likeImp} onDelete={delImpression} onClaim={claimImp}
+                onEdit={editImp} onReply={addReply} onDelReply={delReply}/>
             </div>
           ))}
       </div>
@@ -1719,6 +1828,7 @@ function App(){
   const [records,setRecords]=useState([]);
   const [confirmed,setConfirmed]=useState({});
   const [profiles,setProfiles]=useState({});
+  const [guestbook,setGuestbook]=useState([]);
   const [user,setUser]=useState(undefined);   // undefined=확인중, null=비로그인
   const [loading,setLoading]=useState(true);
   const [showProfile,setShowProfile]=useState(false);
@@ -1745,7 +1855,7 @@ function App(){
       catch(e){ if(alive){setDenied(true);setLoading(false);} return; }
       if(!alive)return;
       setCandidates(data.candidates||[]);setRecords(data.records||[]);
-      setConfirmed(data.confirmed||{});setProfiles(data.profiles||{});
+      setConfirmed(data.confirmed||{});setProfiles(data.profiles||{});setGuestbook(data.guestbook||[]);
       // 첫 로그인이면 프로필 생성. 빠진 항목(가입일·등급)은 채워 넣는다.
       // 등급 도입 전부터 프로필이 있던 사람 = 기존 가입자 → 정회원으로 승계.
       // 프로필이 아예 없는 신규 가입자 → 객원멤버.
@@ -1767,6 +1877,7 @@ function App(){
       if(data.records)setRecords(data.records);
       if(data.confirmed)setConfirmed(data.confirmed);
       if(data.profiles)setProfiles(data.profiles);
+      if(data.guestbook)setGuestbook(data.guestbook);
     });
     return()=>{alive=false;unsub&&unsub();};
   },[user]);
@@ -1826,6 +1937,9 @@ function App(){
 
   async function saveCands(data){setCandidates(data);await fbSet('candidates',data);}
   async function saveRecs(data){setRecords(data);await fbSet('records',data);}
+  async function saveGuestbook(data){setGuestbook(data);await fbSet('guestbook',data);}
+  const addGuestEntry=g=>saveGuestbook([...guestbook,g]);
+  const delGuestEntry=id=>{ if(confirm('삭제할까요?')) saveGuestbook(guestbook.filter(g=>g.id!==id)); };
   // 이번(다가오는) 달 클래스 확정 · 같은 후보를 다시 고르면 해제
   async function confirmClass(ym,candId){
     const next={...confirmed};
@@ -1907,7 +2021,8 @@ function App(){
       </div>
 
       <div className="main">
-        {view.t==='home'&&<HomeTab candidates={candidates} records={records} confirmed={confirmed} me={me} profiles={profiles} go={go} onConfirm={confirmClass}/>}
+        {view.t==='home'&&<HomeTab candidates={candidates} records={records} confirmed={confirmed} me={me} profiles={profiles} go={go} onConfirm={confirmClass}
+          guestbook={guestbook} onAddGuest={addGuestEntry} onDelGuest={delGuestEntry}/>}
         {view.t==='invite'&&<Empty title="초대 링크를 확인하고 있어요..."/>}
         {view.t==='records'&&<RecordsTab records={records} candidates={candidates} onSave={saveRecs} go={go} me={me}
           openAdd={pendingAdd==='records'} onAddClosed={()=>setPendingAdd(null)}/>}
