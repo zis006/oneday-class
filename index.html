@@ -366,7 +366,20 @@ function nthWkday(year,month,wday,n){
   for(let d=1;d<=31;d++){const dt=new Date(y,m,d);if(dt.getMonth()!==m)break;if(dt.getDay()===wday&&++c===n)return dt;}
   return null;
 }
-function getNextClassDate(){const now=new Date();const[y,m]=[now.getFullYear(),now.getMonth()];const cur=nthWkday(y,m,3,2);return(cur&&cur>now)?cur:nthWkday(y,m+1,3,2);}
+/* 활동 당일 19시를 기준으로 '다가오는 → 다녀온' 이 한 번에 넘어간다.
+   두 화면이 같은 경계를 쓰므로 겹치는 구간도, 비는 구간도 없다. */
+const RECORD_OPEN_HOUR=19;
+const handoffAt=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate(),RECORD_OPEN_HOUR,0,0);
+// 다녀온 기록 생성 시점이 지났는지
+function recordOpened(classDate){ return new Date()>=handoffAt(classDate); }
+// 다가오는 클래스는 인계 시점(19시) 전까지만 이번 달을 가리킨다
+function getNextClassDate(){
+  const now=new Date();
+  const [y,m]=[now.getFullYear(),now.getMonth()];
+  const cur=nthWkday(y,m,3,2);
+  if(cur&&handoffAt(cur)>now) return cur;
+  return nthWkday(y,m+1,3,2);
+}
 const toISO=d=>d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`:'';
 const toYM=d=>d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`:'';
 const ymLabel=ym=>{if(!ym)return'';const[y,m]=ym.split('-');return`${y}년 ${String(+m).padStart(2,'0')}월`;};
@@ -1019,7 +1032,10 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
   const nextYM=toYM(nextDate);
   const days=daysUntil(nextDate);
   const confirmedCand=confirmed[nextYM]?candidates.find(c=>c.id===confirmed[nextYM]):null;
-  const top3=[...candidates].sort((a,b)=>calcScore(b)-calcScore(a)).slice(0,3);
+  // 이미 활동으로 선정된 후보는 투표 현황·선택 목록에서 제외 (이번 달 확정분은 남겨 해제 가능)
+  const chosen=new Set(Object.values(confirmed||{}).filter(id=>id!==confirmed[nextYM]));
+  const pool=candidates.filter(c=>!chosen.has(c.id));
+  const top3=pool.filter(c=>c.id!==confirmed[nextYM]).sort((a,b)=>calcScore(b)-calcScore(a)).slice(0,3);
 
   // 지난 원데이 클래스: 오늘 이전의 가장 최근 기록
   const past=[...records].filter(r=>!r.isStub||getImpressions(r).length>0).sort((a,b)=>recDateKey(b).localeCompare(recDateKey(a)))[0]
@@ -1054,13 +1070,13 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
 
       {/* 상세로 안 들어가고 목록에서 바로 확정 */}
       {picking&&<Modal title={`${ymLabel(nextYM)} 클래스 선택`} onClose={()=>setPicking(false)}>
-        {candidates.length===0
+        {pool.length===0
           ?<Empty title="후보가 없어요." sub="먼저 클래스 후보를 등록해주세요."
              action={<Btn sx={{width:'100%'}} onClick={()=>{setPicking(false);go({t:'candidates',add:true});}}>클래스 추가하기</Btn>}/>
           :<React.Fragment>
             <div style={{fontSize:12,color:'#A6A6B2',marginBottom:12}}>득표수 높은 순이에요. 누르면 바로 확정됩니다.</div>
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
-              {[...candidates].sort((a,b)=>calcScore(b)-calcScore(a)).map(c=>{
+              {[...pool].sort((a,b)=>calcScore(b)-calcScore(a)).map(c=>{
                 const on=confirmed[nextYM]===c.id;
                 return(
                   <button key={c.id} onClick={()=>{onConfirm(nextYM,c.id);setPicking(false);}}
@@ -1364,12 +1380,14 @@ function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,openAdd,onAdd
   const [desc,setDesc]=useState(true);
   const [showAdd,setShowAdd]=useState(false);
   useEffect(()=>{if(openAdd){setShowAdd(true);onAddClosed&&onAddClosed();}},[openAdd]);
-  const ymOf={};Object.entries(confirmed||{}).forEach(([ym,id])=>{ymOf[id]=ym;});
-  const sorted=[...candidates].sort((a,b)=>desc?(b.addedAt||0)-(a.addedAt||0):(a.addedAt||0)-(b.addedAt||0));
+  // 활동으로 선정된 후보는 목록에서 빠진다 (확정 취소하면 다시 나타남)
+  const chosen=new Set(Object.values(confirmed||{}));
+  const pool=candidates.filter(c=>!chosen.has(c.id));
+  const sorted=[...pool].sort((a,b)=>desc?(b.addedAt||0)-(a.addedAt||0):(a.addedAt||0)-(b.addedAt||0));
   return(
     <div style={{minHeight:'calc(100vh - 200px)',display:'flex',flexDirection:'column'}}>
       <div className="sec-h" style={{marginBottom:12}}>
-        <span className="sec-t">총 {candidates.length}개</span>
+        <span className="sec-t">총 {pool.length}개</span>
         <SortToggle desc={desc} onToggle={()=>setDesc(d=>!d)}/>
       </div>
       <div style={{flex:1}}>
@@ -1380,7 +1398,7 @@ function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,openAdd,onAdd
               <div key={c.id} onClick={()=>go({t:'cand',id:c.id})} style={{...CS,cursor:'pointer'}}>
                 <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8}}>
                   <Chip cat={c.cat}/>
-                  {ymOf[c.id]&&<MonthBadge ym={ymOf[c.id]}/>}
+                  {}
                 </div>
                 <div style={{fontSize:16,fontWeight:800,color:'#1B1B22',margin:'6px 0 8px'}}>{c.name}</div>
                 <div style={{fontSize:13,color:'#5A5A66',marginBottom:4}}>💰 {won(c.price)}</div>
@@ -1403,6 +1421,7 @@ function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles
   const [showEdit,setShowEdit]=useState(false);
   const nextYM=toYM(getNextClassDate());
   const isConfirmed=(confirmed||{})[nextYM]===cand.id;
+  const isChosen=Object.values(confirmed||{}).includes(cand.id);   // 어느 달이든 확정된 적 있으면 삭제 불가
   const votes=getVotes(cand);
   const myVote=votes[me.uid]?votes[me.uid].k:null;
   const links=getLinks(cand);
@@ -1422,8 +1441,8 @@ function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles
           <Chip cat={cand.cat}/>
           {isMember(me)&&<div style={{display:'flex',gap:6}}>
             <SmallBtn onClick={()=>setShowEdit(true)}>✏️ 수정</SmallBtn>
-            {/* 후보는 등록한 본인만 삭제 가능 */}
-            {mine&&<SmallBtn sx={{background:'#FEF2F2',color:'#E5484D'}}
+            {/* 후보는 등록한 본인만 삭제 가능. 활동으로 확정된 후보는 삭제 불가 */}
+            {mine&&!isChosen&&<SmallBtn sx={{background:'#FEF2F2',color:'#E5484D'}}
               onClick={()=>{if(confirm(`"${cand.name}" 후보를 삭제할까요?\n투표 내용도 함께 사라집니다.`))onDelete(cand);}}>🗑 삭제</SmallBtn>}
           </div>}
         </div>
@@ -1829,6 +1848,7 @@ function App(){
   const [confirmed,setConfirmed]=useState({});
   const [profiles,setProfiles]=useState({});
   const [guestbook,setGuestbook]=useState([]);
+  const [tick,setTick]=useState(0);   // 19시 경계를 넘길 때 재평가용
   const [user,setUser]=useState(undefined);   // undefined=확인중, null=비로그인
   const [loading,setLoading]=useState(true);
   const [showProfile,setShowProfile]=useState(false);
@@ -1911,10 +1931,9 @@ function App(){
     })();
   },[user,loading,view.t,view.ym,records]);
 
-  // 확정한 클래스는 날짜가 지나면 '다녀온'에 기록을 자동 생성한다
+  // 확정한 클래스는 활동 당일 19시가 지나면 '다녀온'에 기록을 자동 생성한다
   useEffect(()=>{
     if(!user||loading)return;
-    const today=toISO(new Date());
     const add=[];
     Object.entries(confirmed||{}).forEach(([ym,cid])=>{
       const c=candidates.find(x=>x.id===cid);
@@ -1923,7 +1942,7 @@ function App(){
       const d=nthWkday(y,m-1,3,2);
       if(!d)return;
       const iso=toISO(d);
-      if(iso>today)return;                                        // 아직 안 지난 일정
+      if(!recordOpened(d))return;                                 // 아직 활동 종료 전
       if(records.some(r=>r.month===ym&&r.candId===cid))return;     // 이미 생성됨
       add.push({
         id:uid(),month:ym,candId:cid,name:c.name,cat:c.cat||'',date:iso,
@@ -1933,7 +1952,13 @@ function App(){
       });
     });
     if(add.length) saveRecs([...records,...add]);
-  },[user,loading,confirmed,candidates,records]);
+  },[user,loading,confirmed,candidates,records,tick]);
+
+  // 앱을 켜둔 채로 19시를 넘겨도 생성되도록 주기적으로 다시 확인
+  useEffect(()=>{
+    const t=setInterval(()=>setTick(n=>n+1),5*60*1000);
+    return()=>clearInterval(t);
+  },[]);
 
   async function saveCands(data){setCandidates(data);await fbSet('candidates',data);}
   async function saveRecs(data){setRecords(data);await fbSet('records',data);}
