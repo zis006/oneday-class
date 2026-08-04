@@ -991,59 +991,6 @@ function ImpressionForm({me,initial,onSubmit,onCancel}){
   );
 }
 
-/* ── TOP3 투표 화면 ──────────────────────────────────────────── */
-function VoteModal({candidates,ym,myPicks,onSave,onClose}){
-  const [picks,setPicks]=useState((myPicks||[]).slice(0,3));
-  function toggle(id){
-    setPicks(p=>p.includes(id)?p.filter(x=>x!==id):(p.length>=3?p:[...p,id]));
-  }
-  const rankOf=id=>picks.indexOf(id);
-  return(
-    <Modal title={`${ymLabel(ym)} 클래스 투표`} onClose={onClose}>
-      <div style={{fontSize:13,color:'#5A5A66',lineHeight:1.7,marginBottom:14}}>
-        가장 하고 싶은 순서대로 <b>최대 3개</b>를 눌러주세요.<br/>
-        <span style={{color:'#A6A6B2'}}>1순위 3점 · 2순위 2점 · 3순위 1점 · 마감 D-{voteDaysLeft()}</span>
-      </div>
-
-      {picks.length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:14}}>
-        {picks.map((id,i)=>{
-          const c=candidates.find(x=>x.id===id);
-          return <span key={id} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#F1EFFE',color:'#6C5CE7',borderRadius:20,padding:'5px 10px',fontSize:12,fontWeight:800}}>
-            {RANK_EMOJI[i]} {c?c.name:'삭제된 후보'}
-            <button onClick={()=>toggle(id)} style={{background:'none',border:'none',cursor:'pointer',color:'#9B8CF0',fontSize:15,lineHeight:1,padding:0}}>×</button>
-          </span>;
-        })}
-      </div>}
-
-      <div style={{display:'flex',flexDirection:'column',gap:8,maxHeight:'46vh',overflowY:'auto'}}>
-        {candidates.map(c=>{
-          const r=rankOf(c.id);
-          const on=r>=0;
-          const full=picks.length>=3&&!on;
-          return(
-            <button key={c.id} onClick={()=>toggle(c.id)} disabled={full}
-              style={{width:'100%',textAlign:'left',fontFamily:'inherit',cursor:full?'default':'pointer',borderRadius:12,padding:'12px 14px',
-                background:on?'#F1EFFE':'#FAFAFC',border:on?'1.5px solid #6C5CE7':'1.5px solid #EFEFF3',opacity:full?0.45:1,
-                display:'flex',alignItems:'center',gap:10}}>
-              <span style={{width:26,height:26,borderRadius:'50%',flexShrink:0,display:'inline-flex',alignItems:'center',justifyContent:'center',
-                background:on?'#6C5CE7':'#EDEDF0',color:on?'#fff':'#BFBFC8',fontSize:on?13:12,fontWeight:800}}>{on?r+1:'+'}</span>
-              <span style={{flex:1,minWidth:0}}>
-                <Chip cat={c.cat}/>
-                <span style={{display:'block',fontSize:14,fontWeight:800,color:'#1B1B22',margin:'2px 0'}}>{c.name}</span>
-                <span style={{fontSize:12,color:'#8A8A96'}}>{won(c.price)}</span>
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div style={{display:'flex',gap:10,marginTop:16}}>
-        <Btn sx={{flex:1}} onClick={()=>onSave(picks)}>{picks.length?`${picks.length}개 투표하기`:'투표 비우기'}</Btn>
-        <Btn v="gray" onClick={onClose}>취소</Btn>
-      </div>
-    </Modal>
-  );
-}
 
 /* ── 방명록 (정회원·객원멤버 모두 작성 가능) ─────────────────── */
 function Guestbook({entries,me,profiles,onAdd,onDelete}){
@@ -1087,8 +1034,15 @@ function Guestbook({entries,me,profiles,onAdd,onDelete}){
 }
 
 /* ═══════════════════ 홈 ═══════════════════════════════════════ */
-function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestbook,onAddGuest,onDelGuest,tally,onVote}){
+function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestbook,onAddGuest,onDelGuest,tally,myPicks,onSaveBallot}){
   const [picking,setPicking]=useState(false);
+  const [picks,setPicks]=useState(myPicks||[]);
+  const [saving,setSaving]=useState(false);
+  // 다른 기기에서 투표가 바뀌면 따라간다
+  const savedKey=(myPicks||[]).join(',');
+  useEffect(()=>{setPicks(myPicks||[]);},[savedKey]);
+  const dirty=picks.join(',')!==savedKey;
+  const togglePick=id=>setPicks(p=>p.includes(id)?p.filter(x=>x!==id):(p.length>=3?p:[...p,id]));
   const nextDate=getNextClassDate();
   const nextYM=toYM(nextDate);
   const days=daysUntil(nextDate);
@@ -1098,8 +1052,9 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
   const pool=candidates.filter(c=>!chosen.has(c.id));
   const sc=id=>tally.score[id]||0, fs=id=>tally.firsts[id]||0;
   // 동점이면 1순위를 더 많이 받은 쪽, 그다음 최근 등록순
-  const byRank=(a,b)=>sc(b)-sc(a)||fs(b)-fs(a)||(b.addedAt||0)-(a.addedAt||0);
-  const top3=pool.filter(c=>c.id!==confirmed[nextYM]).sort(byRank).slice(0,3);
+  const byRank=(a,b)=>sc(b.id)-sc(a.id)||fs(b.id)-fs(a.id)||(b.addedAt||0)-(a.addedAt||0);
+  const ranked=pool.filter(c=>c.id!==confirmed[nextYM]).sort(byRank);
+  const maxScore=Math.max(0,...ranked.map(c=>sc(c.id)));
 
   // 지난 원데이 클래스: 오늘 이전의 가장 최근 기록
   const past=[...records].filter(r=>!r.isStub||getImpressions(r).length>0).sort((a,b)=>recDateKey(b).localeCompare(recDateKey(a)))[0]
@@ -1121,7 +1076,8 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
               <div style={{fontSize:14,color:'#5A5A66'}}>{fmtDot(nextDate)}</div>
               <div style={{fontSize:14,color:'#5A5A66',marginTop:2}}>{days}일 후</div>
             </div>
-            {isMember(me)&&<Btn v="out" sx={{width:'100%',marginTop:14}} onClick={()=>setPicking(true)}>클래스 변경하기</Btn>}
+            {/* 변경은 상세에서. 홈에 큰 버튼을 두면 바꾸는 게 기본 동작처럼 보인다 */}
+            {isMember(me)&&<div style={{fontSize:12,color:'#C4C4CC',marginTop:12}}>변경하려면 카드를 눌러 상세로 이동하세요</div>}
           </React.Fragment>:<React.Fragment>
             <span style={{fontSize:12,color:'#8A8A96',fontWeight:600}}>⏳ 미확정</span>
             <div style={{fontSize:17,fontWeight:800,color:'#1B1B22',margin:'8px 0 10px'}}>아직 클래스가 결정되지 않았어요</div>
@@ -1165,31 +1121,56 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
           </React.Fragment>}
       </Modal>}
 
-      {/* 투표 현황 */}
+      {/* 투표 현황 — 카톡 투표처럼 여기서 바로 찍는다 */}
       <div className="sec sec-vote">
         <div className="sec-h">
-          <span className="sec-t">{ymLabel(voteYM())} 클래스 투표 현황</span>
-          {isMember(me)
-            ?<button onClick={onVote} style={{background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:800,color:'#6C5CE7',flexShrink:0}}>🗳 투표하기 · D-{voteDaysLeft()}</button>
-            :<span style={{fontSize:12,color:'#8A8A96',fontWeight:700,flexShrink:0}}>마감 D-{voteDaysLeft()}</span>}
+          <span className="sec-t">{ymLabel(voteYM())} 클래스 투표</span>
+          <span style={{fontSize:12,color:'#8A8A96',fontWeight:700,flexShrink:0}}>
+            {tally.voters?`${tally.voters}명 참여 · `:''}마감 D-{voteDaysLeft()}
+          </span>
         </div>
-        {top3.length===0
+        {ranked.length===0
           ?<div style={CS}><Empty title="활동 후보가 없어요." sub={isMember(me)?'체험하고 싶은 클래스 후보를 등록해주세요.':''}
               action={isMember(me)?<Btn sx={{width:'100%'}} onClick={()=>go({t:'candidates',add:true})}>클래스 추가하기</Btn>:null}/></div>
-          :<div style={{display:'flex',flexDirection:'column',gap:10}}>
-            {top3.map((c,i)=>(
-              <div key={c.id} onClick={()=>go({t:'cand',id:c.id})} style={{...CS,cursor:'pointer',display:'flex',alignItems:'center',gap:14}}>
-                <span style={{fontSize:26,fontWeight:900,fontStyle:'italic',color:'#1B1B22',flexShrink:0,minWidth:22,textAlign:'center'}}>{i+1}</span>
-                <div style={{flex:1,minWidth:0}}>
-                  <Chip cat={c.cat}/>
-                  <div style={{fontSize:15,fontWeight:800,color:'#1B1B22',margin:'4px 0 3px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</div>
-                  <div style={{fontSize:13,color:'#8A8A96',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.address||'장소 미정'}</div>
-                </div>
-                <span style={{fontSize:12,color:'#5A5A66',fontWeight:700,flexShrink:0,alignSelf:'flex-end',textAlign:'right'}}>
-                  {sc(c.id)}점{fs(c.id)?<><br/><span style={{color:'#A6A6B2',fontWeight:600}}>🥇 {fs(c.id)}명</span></>:null}
-                </span>
-              </div>
-            ))}
+          :<div style={CS}>
+            {isMember(me)&&<div style={{fontSize:12,color:'#A6A6B2',marginBottom:12,lineHeight:1.6}}>
+              하고 싶은 순서대로 최대 3개를 눌러주세요 · 1순위 3점 · 2순위 2점 · 3순위 1점
+            </div>}
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {ranked.map(c=>{
+                const r=picks.indexOf(c.id), on=r>=0;
+                const full=picks.length>=3&&!on;
+                const s=sc(c.id), pct=maxScore?Math.round(s/maxScore*100):0;
+                return(
+                  <div key={c.id} onClick={()=>isMember(me)&&!full&&togglePick(c.id)}
+                    style={{position:'relative',overflow:'hidden',borderRadius:12,padding:'11px 13px',
+                      border:on?'1.5px solid #6C5CE7':'1.5px solid #EFEFF3',background:'#fff',
+                      cursor:isMember(me)&&!full?'pointer':'default',opacity:full?0.5:1}}>
+                    {/* 득표 비율 막대 (카톡 투표처럼 결과가 늘 보인다) */}
+                    <span style={{position:'absolute',left:0,top:0,bottom:0,width:`${pct}%`,background:on?'#F1EFFE':'#F7F7FA',transition:'width .25s'}}/>
+                    <div style={{position:'relative',display:'flex',alignItems:'center',gap:11}}>
+                      {isMember(me)&&<span style={{width:26,height:26,borderRadius:'50%',flexShrink:0,display:'inline-flex',alignItems:'center',justifyContent:'center',
+                        background:on?'#6C5CE7':'#EDEDF0',color:on?'#fff':'#BFBFC8',fontSize:13,fontWeight:800}}>{on?r+1:'+'}</span>}
+                      <div style={{flex:1,minWidth:0}}>
+                        <Chip cat={c.cat}/>
+                        <div style={{fontSize:14,fontWeight:800,color:'#1B1B22',margin:'2px 0',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</div>
+                        <div style={{fontSize:12,color:'#8A8A96',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.address||'장소 미정'}</div>
+                      </div>
+                      <div style={{flexShrink:0,textAlign:'right'}}>
+                        <div style={{fontSize:13,fontWeight:800,color:'#3A3A44'}}>{s}점</div>
+                        {fs(c.id)>0&&<div style={{fontSize:11,color:'#A6A6B2',fontWeight:700,marginTop:1}}>🥇 {fs(c.id)}</div>}
+                      </div>
+                      <button onClick={e=>{e.stopPropagation();go({t:'cand',id:c.id});}}
+                        style={{flexShrink:0,background:'none',border:'none',cursor:'pointer',color:'#C4C4CC',fontSize:17,padding:'0 2px',lineHeight:1}}>›</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {isMember(me)&&<Btn v={dirty?'pri':'gray'} sx={{width:'100%',marginTop:12}} disabled={!dirty||saving}
+              onClick={async()=>{setSaving(true);await onSaveBallot(picks);setSaving(false);}}>
+              {saving?'저장 중...':dirty?`${picks.length}개 투표하기`:(savedKey?'투표 완료':'투표해주세요')}
+            </Btn>}
           </div>}
       </div>
 
@@ -1447,7 +1428,7 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
 }
 
 /* ═══════════════════ 다음 활동 후보 ═══════════════════════════ */
-function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,tally,onVote,openAdd,onAddClosed}){
+function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,tally,openAdd,onAddClosed}){
   const [desc,setDesc]=useState(true);
   const [showAdd,setShowAdd]=useState(false);
   useEffect(()=>{if(openAdd){setShowAdd(true);onAddClosed&&onAddClosed();}},[openAdd]);
@@ -1461,9 +1442,6 @@ function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,tally,onVote,
         <span className="sec-t">총 {pool.length}개</span>
         <SortToggle desc={desc} onToggle={()=>setDesc(d=>!d)}/>
       </div>
-      {isMember(me)&&pool.length>0&&<Btn v="out" sx={{width:'100%',marginBottom:12}} onClick={onVote}>
-        🗳 {ymLabel(voteYM())} 클래스 투표하기 · D-{voteDaysLeft()}
-      </Btn>}
       <div style={{flex:1}}>
         {sorted.length===0
           ?<div style={CS}><Empty title="아직 후보가 없어요." sub="체험하고 싶은 클래스를 추가해보세요!"/></div>
@@ -1552,9 +1530,10 @@ function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles
           })}
         </div>
 
-        {isMember(me)&&<Btn v="out" sx={{width:'100%',marginTop:14}} onClick={onVote}>
-          {myPicks.length?'투표 수정하기':'🗳 투표하러 가기'}
-        </Btn>}
+        {isMember(me)&&<button onClick={onVote}
+          style={{marginTop:14,background:'none',border:'none',padding:0,cursor:'pointer',fontFamily:'inherit',fontSize:13,fontWeight:800,color:'#6C5CE7'}}>
+          {myPicks.length?'투표 수정하기 ›':'투표하러 가기 ›'}
+        </button>}
         {!isMember(me)&&<div style={{marginTop:12}}><GuestNote>객원멤버는 결과만 볼 수 있어요.</GuestNote></div>}
       </div>
 
@@ -1921,7 +1900,6 @@ function App(){
   const [user,setUser]=useState(undefined);   // undefined=확인중, null=비로그인
   const [loading,setLoading]=useState(true);
   const [showProfile,setShowProfile]=useState(false);
-  const [showVote,setShowVote]=useState(false);
   const [denied,setDenied]=useState(false);
   const [authError,setAuthError]=useState('');
   const [pendingAdd,setPendingAdd]=useState(null);
@@ -2134,28 +2112,25 @@ function App(){
       <div className="main">
         {view.t==='home'&&<HomeTab candidates={candidates} records={records} confirmed={confirmed} me={me} profiles={profiles} go={go} onConfirm={confirmClass}
           guestbook={guestbook} onAddGuest={addGuestEntry} onDelGuest={delGuestEntry}
-          tally={tally} onVote={()=>setShowVote(true)}/>}
+          tally={tally} myPicks={myPicks} onSaveBallot={saveMyBallot}/>}
         {view.t==='invite'&&<Empty title="초대 링크를 확인하고 있어요..."/>}
         {view.t==='records'&&<RecordsTab records={records} candidates={candidates} onSave={saveRecs} go={go} me={me}
           openAdd={pendingAdd==='records'} onAddClosed={()=>setPendingAdd(null)}/>}
         {view.t==='candidates'&&<CandidatesTab candidates={candidates} confirmed={confirmed} onSave={saveCands} go={go} me={me} profiles={profiles}
-          tally={tally} onVote={()=>setShowVote(true)}
+          tally={tally}
           openAdd={pendingAdd==='candidates'} onAddClosed={()=>setPendingAdd(null)}/>}
         {view.t==='record'&&<div className="detail-wrap">{rec
           ?<RecordDetail rec={rec} me={me} profiles={profiles} openImp={view.imp} onUpdate={u=>saveRecs(records.map(r=>r.id===u.id?u:r))}/>
           :<Empty title="기록을 찾을 수 없어요."/>}</div>}
         {view.t==='cand'&&<div className="detail-wrap">{cand
           ?<CandidateDetail cand={cand} me={me} profiles={profiles} confirmed={confirmed} onConfirm={confirmClass}
-             tally={tally} myPicks={myPicks} onVote={()=>setShowVote(true)}
+             tally={tally} myPicks={myPicks} onVote={()=>go({t:'home'})}
              onUpdate={u=>saveCands(candidates.map(c=>c.id===u.id?u:c))}
              onDelete={c=>{saveCands(candidates.filter(x=>x.id!==c.id));back();}}/>
           :<Empty title="후보를 찾을 수 없어요."/>}</div>}
       </div>
 
       {showProfile&&<ProfileModal me={me} profiles={profiles} onSave={saveProfile} onSetRole={setMemberRole} onClose={()=>setShowProfile(false)}/>}
-      {showVote&&isMember(me)&&<VoteModal ym={curYM} myPicks={myPicks} onClose={()=>setShowVote(false)}
-        candidates={candidates.filter(c=>!Object.values(confirmed||{}).includes(c.id))}
-        onSave={async p=>{await saveMyBallot(p);setShowVote(false);}}/>}
     </div>
   );
 }
