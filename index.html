@@ -339,52 +339,34 @@ const roleLabel = me => isMember(me)?'정회원':'객원멤버';
 const CATS=['도예','요리','베이킹','공예','그림','플라워','캘리','가죽','기타'];
 const CE={도예:'🏺',요리:'🍳',베이킹:'🥐',공예:'✂️',그림:'🎨',플라워:'💐',캘리:'✒️',가죽:'👜',기타:'✨'};
 
-/* 투표 5단계 · 득표수 = 가중 점수 합계 */
-const VOPTS=[
-  {k:'당장',    label:'당장 하고싶어요',        e:'🔥', score: 2, color:'#E53E3E'},
-  {k:'언젠가',  label:'하고싶어요',            e:'👍', score: 1, color:'#6C5CE7'},
-  {k:'보통',    label:'해도그만 안해도 그만',   e:'😐', score: 0, color:'#64748B'},
-  {k:'안함',    label:'안하고 싶어요',          e:'🙅', score:-1, color:'#D97706'},
-  {k:'절대안함',label:'절대 안하고 싶어요',      e:'❌', score:-2, color:'#94A3B8'},
-];
-const VMAP={};VOPTS.forEach(o=>{VMAP[o.k]=o;});
-
 /* 투표는 활동 '전달 1일~말일'에 진행하고 매월 리셋된다.
    즉 지금 하는 투표는 다음 달 활동을 정하는 표다. */
-const isYMKey=k=>/^\d{4}-\d{2}$/.test(k);
 function voteYM(){const n=new Date();return toYM(new Date(n.getFullYear(),n.getMonth()+1,1));}
 function voteClosesAt(){const n=new Date();return new Date(n.getFullYear(),n.getMonth()+1,0,23,59,59);}
 function voteDaysLeft(){return Math.max(0,Math.ceil((voteClosesAt()-new Date())/86400000));}
 
-const normVote=v=>typeof v==='string'?{k:v}:(v&&v.k?{k:v.k}:null);
-/* 저장 구조: votes = { '2026-09': { uid: {k:'당장'} } }
-   구버전은 월 구분 없이 { uid|닉네임: ... } 였으므로, 진행 중이던 표가 사라지지 않도록
-   읽을 때는 현재 투표 월의 표로 간주한다. */
-function getVotes(c,ym){
-  const raw=(c&&c.votes)||{};
-  const target=ym||voteYM();
-  const src=Object.keys(raw).some(isYMKey) ? (raw[target]||{}) : raw;
-  const out={};
-  Object.entries(src).forEach(([k,v])=>{const n=normVote(v);if(n)out[k]=n;});
-  return out;
+/* ── TOP3 순위 투표 ───────────────────────────────────────────
+   목록에서 최대 3개를 1·2·3순위로 고른다 (3·2·1점).
+   4명 규모에선 순위제가 동점이 덜 나고 "1순위 2명" 처럼 워딩도 자연스럽다.
+   저장 구조: ballots = { '2026-09': { uid: [1순위id, 2순위id, 3순위id] } }
+   활동 전달 1일~말일이 투표 기간이고, 달이 바뀌면 새 버킷이므로 자동 리셋된다. */
+const RANK_PTS=[3,2,1];
+const RANK_LABEL=['1순위','2순위','3순위'];
+const RANK_EMOJI=['🥇','🥈','🥉'];
+
+const getBallots=(raw,ym)=>((raw||{})[ym])||{};
+function tallyBallots(ballots){
+  const score={},firsts={},voters=[];
+  Object.entries(ballots||{}).forEach(([uid,list])=>{
+    if(!Array.isArray(list)||!list.length)return;
+    voters.push(uid);
+    list.slice(0,3).forEach((cid,i)=>{
+      score[cid]=(score[cid]||0)+RANK_PTS[i];
+      if(i===0) firsts[cid]=(firsts[cid]||0)+1;
+    });
+  });
+  return {score,firsts,voters:voters.length};
 }
-// 투표를 새로 쓸 때 구버전 평면 구조를 현재 월 버킷으로 이관한다
-function withVote(c,ym,uidKey,choice){
-  const raw=(c&&c.votes)||{};
-  const bucketed=Object.keys(raw).some(isYMKey);
-  const base=bucketed?{...raw}:{};
-  if(!bucketed){
-    const moved={};
-    Object.entries(raw).forEach(([k,v])=>{const n=normVote(v);if(n)moved[k]=n;});
-    if(Object.keys(moved).length) base[ym]=moved;
-  }
-  const bucket={...(base[ym]||{})};
-  if(choice) bucket[uidKey]={k:choice}; else delete bucket[uidKey];
-  base[ym]=bucket;
-  return base;
-}
-const calcScore=(c,ym)=>Object.values(getVotes(c,ym)).reduce((s,v)=>s+(VMAP[v.k]?VMAP[v.k].score:0),0);
-const voterCount=(c,ym)=>Object.keys(getVotes(c,ym)).length;
 
 function nthWkday(year,month,wday,n){
   const base=new Date(year,month,1);const[y,m]=[base.getFullYear(),base.getMonth()];let c=0;
@@ -1009,6 +991,60 @@ function ImpressionForm({me,initial,onSubmit,onCancel}){
   );
 }
 
+/* ── TOP3 투표 화면 ──────────────────────────────────────────── */
+function VoteModal({candidates,ym,myPicks,onSave,onClose}){
+  const [picks,setPicks]=useState((myPicks||[]).slice(0,3));
+  function toggle(id){
+    setPicks(p=>p.includes(id)?p.filter(x=>x!==id):(p.length>=3?p:[...p,id]));
+  }
+  const rankOf=id=>picks.indexOf(id);
+  return(
+    <Modal title={`${ymLabel(ym)} 클래스 투표`} onClose={onClose}>
+      <div style={{fontSize:13,color:'#5A5A66',lineHeight:1.7,marginBottom:14}}>
+        가장 하고 싶은 순서대로 <b>최대 3개</b>를 눌러주세요.<br/>
+        <span style={{color:'#A6A6B2'}}>1순위 3점 · 2순위 2점 · 3순위 1점 · 마감 D-{voteDaysLeft()}</span>
+      </div>
+
+      {picks.length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:14}}>
+        {picks.map((id,i)=>{
+          const c=candidates.find(x=>x.id===id);
+          return <span key={id} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#F1EFFE',color:'#6C5CE7',borderRadius:20,padding:'5px 10px',fontSize:12,fontWeight:800}}>
+            {RANK_EMOJI[i]} {c?c.name:'삭제된 후보'}
+            <button onClick={()=>toggle(id)} style={{background:'none',border:'none',cursor:'pointer',color:'#9B8CF0',fontSize:15,lineHeight:1,padding:0}}>×</button>
+          </span>;
+        })}
+      </div>}
+
+      <div style={{display:'flex',flexDirection:'column',gap:8,maxHeight:'46vh',overflowY:'auto'}}>
+        {candidates.map(c=>{
+          const r=rankOf(c.id);
+          const on=r>=0;
+          const full=picks.length>=3&&!on;
+          return(
+            <button key={c.id} onClick={()=>toggle(c.id)} disabled={full}
+              style={{width:'100%',textAlign:'left',fontFamily:'inherit',cursor:full?'default':'pointer',borderRadius:12,padding:'12px 14px',
+                background:on?'#F1EFFE':'#FAFAFC',border:on?'1.5px solid #6C5CE7':'1.5px solid #EFEFF3',opacity:full?0.45:1,
+                display:'flex',alignItems:'center',gap:10}}>
+              <span style={{width:26,height:26,borderRadius:'50%',flexShrink:0,display:'inline-flex',alignItems:'center',justifyContent:'center',
+                background:on?'#6C5CE7':'#EDEDF0',color:on?'#fff':'#BFBFC8',fontSize:on?13:12,fontWeight:800}}>{on?r+1:'+'}</span>
+              <span style={{flex:1,minWidth:0}}>
+                <Chip cat={c.cat}/>
+                <span style={{display:'block',fontSize:14,fontWeight:800,color:'#1B1B22',margin:'2px 0'}}>{c.name}</span>
+                <span style={{fontSize:12,color:'#8A8A96'}}>{won(c.price)}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{display:'flex',gap:10,marginTop:16}}>
+        <Btn sx={{flex:1}} onClick={()=>onSave(picks)}>{picks.length?`${picks.length}개 투표하기`:'투표 비우기'}</Btn>
+        <Btn v="gray" onClick={onClose}>취소</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 /* ── 방명록 (정회원·객원멤버 모두 작성 가능) ─────────────────── */
 function Guestbook({entries,me,profiles,onAdd,onDelete}){
   const [text,setText]=useState('');
@@ -1051,7 +1087,7 @@ function Guestbook({entries,me,profiles,onAdd,onDelete}){
 }
 
 /* ═══════════════════ 홈 ═══════════════════════════════════════ */
-function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestbook,onAddGuest,onDelGuest}){
+function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestbook,onAddGuest,onDelGuest,tally,onVote}){
   const [picking,setPicking]=useState(false);
   const nextDate=getNextClassDate();
   const nextYM=toYM(nextDate);
@@ -1060,7 +1096,10 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
   // 이미 활동으로 선정된 후보는 투표 현황·선택 목록에서 제외 (이번 달 확정분은 남겨 해제 가능)
   const chosen=new Set(Object.values(confirmed||{}).filter(id=>id!==confirmed[nextYM]));
   const pool=candidates.filter(c=>!chosen.has(c.id));
-  const top3=pool.filter(c=>c.id!==confirmed[nextYM]).sort((a,b)=>calcScore(b)-calcScore(a)).slice(0,3);
+  const sc=id=>tally.score[id]||0, fs=id=>tally.firsts[id]||0;
+  // 동점이면 1순위를 더 많이 받은 쪽, 그다음 최근 등록순
+  const byRank=(a,b)=>sc(b)-sc(a)||fs(b)-fs(a)||(b.addedAt||0)-(a.addedAt||0);
+  const top3=pool.filter(c=>c.id!==confirmed[nextYM]).sort(byRank).slice(0,3);
 
   // 지난 원데이 클래스: 오늘 이전의 가장 최근 기록
   const past=[...records].filter(r=>!r.isStub||getImpressions(r).length>0).sort((a,b)=>recDateKey(b).localeCompare(recDateKey(a)))[0]
@@ -1101,7 +1140,7 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
           :<React.Fragment>
             <div style={{fontSize:12,color:'#A6A6B2',marginBottom:12}}>득표수 높은 순이에요. 누르면 바로 확정됩니다.</div>
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
-              {[...pool].sort((a,b)=>calcScore(b)-calcScore(a)).map(c=>{
+              {[...pool].sort(byRank).map(c=>{
                 const on=confirmed[nextYM]===c.id;
                 return(
                   <button key={c.id} onClick={()=>{onConfirm(nextYM,c.id);setPicking(false);}}
@@ -1113,7 +1152,7 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
                         <div style={{fontSize:12,color:'#8A8A96'}}>{won(c.price)}{c.address?` · ${c.address}`:''}</div>
                       </div>
                       <div style={{flexShrink:0,textAlign:'right'}}>
-                        <div style={{fontSize:12,fontWeight:800,color:'#5A5A66'}}>{calcScore(c)}점</div>
+                        <div style={{fontSize:12,fontWeight:800,color:'#5A5A66'}}>{sc(c.id)}점</div>
                         {on&&<div style={{fontSize:12,color:'#6C5CE7',fontWeight:800,marginTop:2}}>✓ 확정</div>}
                       </div>
                     </div>
@@ -1130,7 +1169,9 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
       <div className="sec sec-vote">
         <div className="sec-h">
           <span className="sec-t">{ymLabel(voteYM())} 클래스 투표 현황</span>
-          <span style={{fontSize:12,color:'#8A8A96',fontWeight:700,flexShrink:0}}>마감 D-{voteDaysLeft()}</span>
+          {isMember(me)
+            ?<button onClick={onVote} style={{background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:800,color:'#6C5CE7',flexShrink:0}}>🗳 투표하기 · D-{voteDaysLeft()}</button>
+            :<span style={{fontSize:12,color:'#8A8A96',fontWeight:700,flexShrink:0}}>마감 D-{voteDaysLeft()}</span>}
         </div>
         {top3.length===0
           ?<div style={CS}><Empty title="활동 후보가 없어요." sub={isMember(me)?'체험하고 싶은 클래스 후보를 등록해주세요.':''}
@@ -1144,7 +1185,9 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
                   <div style={{fontSize:15,fontWeight:800,color:'#1B1B22',margin:'4px 0 3px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</div>
                   <div style={{fontSize:13,color:'#8A8A96',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.address||'장소 미정'}</div>
                 </div>
-                <span style={{fontSize:12,color:'#5A5A66',fontWeight:700,flexShrink:0,alignSelf:'flex-end'}}>득표수 : {calcScore(c)}</span>
+                <span style={{fontSize:12,color:'#5A5A66',fontWeight:700,flexShrink:0,alignSelf:'flex-end',textAlign:'right'}}>
+                  {sc(c.id)}점{fs(c.id)?<><br/><span style={{color:'#A6A6B2',fontWeight:600}}>🥇 {fs(c.id)}명</span></>:null}
+                </span>
               </div>
             ))}
           </div>}
@@ -1404,7 +1447,7 @@ function RecordDetail({rec,onUpdate,me,profiles,openImp}){
 }
 
 /* ═══════════════════ 다음 활동 후보 ═══════════════════════════ */
-function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,openAdd,onAddClosed}){
+function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,tally,onVote,openAdd,onAddClosed}){
   const [desc,setDesc]=useState(true);
   const [showAdd,setShowAdd]=useState(false);
   useEffect(()=>{if(openAdd){setShowAdd(true);onAddClosed&&onAddClosed();}},[openAdd]);
@@ -1418,6 +1461,9 @@ function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,openAdd,onAdd
         <span className="sec-t">총 {pool.length}개</span>
         <SortToggle desc={desc} onToggle={()=>setDesc(d=>!d)}/>
       </div>
+      {isMember(me)&&pool.length>0&&<Btn v="out" sx={{width:'100%',marginBottom:12}} onClick={onVote}>
+        🗳 {ymLabel(voteYM())} 클래스 투표하기 · D-{voteDaysLeft()}
+      </Btn>}
       <div style={{flex:1}}>
         {sorted.length===0
           ?<div style={CS}><Empty title="아직 후보가 없어요." sub="체험하고 싶은 클래스를 추가해보세요!"/></div>
@@ -1430,7 +1476,8 @@ function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,openAdd,onAdd
                 </div>
                 <div style={{fontSize:16,fontWeight:800,color:'#1B1B22',margin:'6px 0 8px'}}>{c.name}</div>
                 <div style={{fontSize:13,color:'#5A5A66',marginBottom:4}}>💰 {won(c.price)}</div>
-                <div style={{fontSize:13,color:'#5A5A66'}}>👍 추천수 {calcScore(c)}개 <span style={{color:'#A6A6B2'}}>· {voterCount(c)}명 참여</span></div>
+                <div style={{fontSize:13,color:'#5A5A66'}}>🗳 {tally.score[c.id]||0}점
+                  {tally.firsts[c.id]?<span style={{color:'#A6A6B2'}}> · 🥇 {tally.firsts[c.id]}명</span>:null}</div>
                 {(c.addedByUid||c.addedBy)&&<div style={{fontSize:12,color:'#A6A6B2',marginTop:4}}>등록 · {nameOf(profiles,c.addedByUid,c.addedBy)}</div>}
               </div>
             ))}
@@ -1445,19 +1492,17 @@ function CandidatesTab({candidates,confirmed,onSave,go,me,profiles,openAdd,onAdd
 }
 
 /* ── 후보 상세 ───────────────────────────────────────────────── */
-function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles}){
+function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles,tally,myPicks,onVote}){
   const [showEdit,setShowEdit]=useState(false);
   const nextYM=toYM(getNextClassDate());
   const isConfirmed=(confirmed||{})[nextYM]===cand.id;
   const isChosen=Object.values(confirmed||{}).includes(cand.id);   // 어느 달이든 확정된 적 있으면 삭제 불가
   const ym=voteYM();
-  const votes=getVotes(cand,ym);
-  const myVote=votes[me.uid]?votes[me.uid].k:null;
+  const score=tally.score[cand.id]||0;
+  const myRank=(myPicks||[]).indexOf(cand.id);   // 내가 몇 순위로 뽑았는지
   const links=getLinks(cand);
   const mine=cand.addedByUid?cand.addedByUid===me.uid:false;
   // 익명 투표: 이름은 저장하지 않고 uid만 키로 쓴다 (본인 수정·취소용)
-  function castVote(key){ onUpdate({...cand,votes:withVote(cand,ym,me.uid,key)}); }
-  function cancelVote(){   onUpdate({...cand,votes:withVote(cand,ym,me.uid,null)}); }
   return(
     <React.Fragment>
       <div style={{...CS,marginBottom:12}}>
@@ -1484,34 +1529,33 @@ function CandidateDetail({cand,onUpdate,onDelete,onConfirm,confirmed,me,profiles
         </Btn>}
       </div>
 
-      {/* 투표: 익명 · 언제든 변경 가능 · 투표 전에도 결과 공개 */}
+      {/* 투표 결과 (익명). 투표 자체는 목록에서 TOP3로 한 번에 한다 */}
       <div style={CS}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:4}}>
           <span style={{fontSize:14,fontWeight:800,color:'#1B1B22'}}>{ymLabel(ym)} 클래스 투표</span>
-          <span style={{fontSize:12,color:'#8A8A96',fontWeight:700}}>득표수 {calcScore(cand,ym)} · {voterCount(cand,ym)}명</span>
+          <span style={{fontSize:12,color:'#8A8A96',fontWeight:700}}>{myRank>=0?`내 ${RANK_LABEL[myRank]}`:'미투표'}</span>
         </div>
-        <div style={{fontSize:12,color:'#A6A6B2',marginBottom:14}}>
-          마감 D-{voteDaysLeft()} · {isMember(me)?'익명 투표이고 언제든 바꿀 수 있어요.':'객원멤버는 결과만 볼 수 있어요.'}
+        <div style={{fontSize:12,color:'#A6A6B2',marginBottom:14}}>익명 투표 · 마감 D-{voteDaysLeft()}</div>
+
+        <div style={{display:'flex',alignItems:'baseline',gap:8,marginBottom:12}}>
+          <span style={{fontSize:26,fontWeight:900,color:'#1B1B22'}}>{score}</span>
+          <span style={{fontSize:13,color:'#8A8A96',fontWeight:700}}>점</span>
+          <span style={{fontSize:12,color:'#A6A6B2',marginLeft:2}}>{tally.voters?`${tally.voters}명 투표`:'아직 투표 없음'}</span>
         </div>
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {VOPTS.map(o=>{
-            const isMe=myVote===o.k;
-            const canVote=isMember(me);
-            const cnt=Object.values(votes).filter(v=>v.k===o.k).length;
-            const total=voterCount(cand);
-            const pct=total?Math.round(cnt/total*100):0;
-            return(
-              <button key={o.k} onClick={()=>canVote&&castVote(o.k)} disabled={!canVote} style={{position:'relative',overflow:'hidden',width:'100%',display:'flex',alignItems:'center',gap:10,padding:'12px 14px',borderRadius:10,cursor:canVote?'pointer':'default',fontFamily:'inherit',textAlign:'left',border:isMe?`1.5px solid ${o.color}`:'1.5px solid #EFEFF3',background:'#fff'}}>
-                {/* 결과 미리보기: 투표 여부와 상관없이 항상 보여준다 */}
-                <span style={{position:'absolute',left:0,top:0,bottom:0,width:`${pct}%`,background:isMe?'#F1EFFE':'#F5F5F8',transition:'width .25s'}}/>
-                <span style={{position:'relative',fontSize:17,flexShrink:0}}>{o.e}</span>
-                <span style={{position:'relative',flex:1,fontSize:14,fontWeight:isMe?800:600,color:isMe?o.color:'#3A3A44'}}>{o.label}</span>
-                <span style={{position:'relative',fontSize:12,color:cnt?'#5A5A66':'#C4C4CC',fontWeight:700,flexShrink:0}}>{cnt}명</span>
-              </button>
-            );
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {RANK_LABEL.map((lab,i)=>{
+            const n=i===0?(tally.firsts[cand.id]||0):null;
+            if(i>0)return null;
+            return <span key={lab} style={{fontSize:12,fontWeight:700,color:n?'#6C5CE7':'#BFBFC8',background:n?'#F1EFFE':'#F5F5F8',borderRadius:20,padding:'5px 11px'}}>
+              {RANK_EMOJI[0]} 1순위 {n}명
+            </span>;
           })}
         </div>
-        {myVote&&isMember(me)&&<button onClick={cancelVote} style={{marginTop:12,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:700,color:'#8A8A96',padding:0}}>내 투표 취소하기</button>}
+
+        {isMember(me)&&<Btn v="out" sx={{width:'100%',marginTop:14}} onClick={onVote}>
+          {myPicks.length?'투표 수정하기':'🗳 투표하러 가기'}
+        </Btn>}
+        {!isMember(me)&&<div style={{marginTop:12}}><GuestNote>객원멤버는 결과만 볼 수 있어요.</GuestNote></div>}
       </div>
 
       {showEdit&&<EditCandidateModal cand={cand} onSave={u=>{onUpdate(u);setShowEdit(false);}} onClose={()=>setShowEdit(false)}/>}
@@ -1872,10 +1916,12 @@ function App(){
   const [confirmed,setConfirmed]=useState({});
   const [profiles,setProfiles]=useState({});
   const [guestbook,setGuestbook]=useState([]);
+  const [ballotsRaw,setBallotsRaw]=useState({});
   const [tick,setTick]=useState(0);   // 19시 경계를 넘길 때 재평가용
   const [user,setUser]=useState(undefined);   // undefined=확인중, null=비로그인
   const [loading,setLoading]=useState(true);
   const [showProfile,setShowProfile]=useState(false);
+  const [showVote,setShowVote]=useState(false);
   const [denied,setDenied]=useState(false);
   const [authError,setAuthError]=useState('');
   const [pendingAdd,setPendingAdd]=useState(null);
@@ -1900,6 +1946,7 @@ function App(){
       if(!alive)return;
       setCandidates(data.candidates||[]);setRecords(data.records||[]);
       setConfirmed(data.confirmed||{});setProfiles(data.profiles||{});setGuestbook(data.guestbook||[]);
+      setBallotsRaw(data.ballots||{});
       // 첫 로그인이면 프로필 생성. 빠진 항목(가입일·등급)은 채워 넣는다.
       // 등급 도입 전부터 프로필이 있던 사람 = 기존 가입자 → 정회원으로 승계.
       // 프로필이 아예 없는 신규 가입자 → 객원멤버.
@@ -1922,6 +1969,7 @@ function App(){
       if(data.confirmed)setConfirmed(data.confirmed);
       if(data.profiles)setProfiles(data.profiles);
       if(data.guestbook)setGuestbook(data.guestbook);
+      if(data.ballots)setBallotsRaw(data.ballots);
     });
     return()=>{alive=false;unsub&&unsub();};
   },[user]);
@@ -1987,6 +2035,14 @@ function App(){
   async function saveCands(data){setCandidates(data);await fbSet('candidates',data);}
   async function saveRecs(data){setRecords(data);await fbSet('records',data);}
   async function saveGuestbook(data){setGuestbook(data);await fbSet('guestbook',data);}
+  // TOP3 투표 저장 (해당 월 버킷에 내 순위만 갱신 → 달이 바뀌면 자동 리셋)
+  async function saveMyBallot(picks){
+    const ym=voteYM();
+    const bucket={...((ballotsRaw||{})[ym]||{})};
+    if(picks&&picks.length) bucket[user.uid]=picks.slice(0,3); else delete bucket[user.uid];
+    const next={...ballotsRaw,[ym]:bucket};
+    setBallotsRaw(next);await fbSet('ballots',next);
+  }
   const addGuestEntry=g=>saveGuestbook([...guestbook,g]);
   const delGuestEntry=id=>{ if(confirm('삭제할까요?')) saveGuestbook(guestbook.filter(g=>g.id!==id)); };
   // 이번(다가오는) 달 클래스 확정 · 같은 후보를 다시 고르면 해제
@@ -2033,6 +2089,12 @@ function App(){
   );
   if(loading) return spinner;
 
+  // 이번 투표 월의 집계 (모든 화면이 같은 값을 쓴다)
+  const curYM=voteYM();
+  const ballots=getBallots(ballotsRaw,curYM);
+  const tally=tallyBallots(ballots);
+  const myPicks=ballots[user.uid]||[];
+
   const myProfile=profiles[user.uid]||{};
   const me={
     uid:user.uid,
@@ -2071,23 +2133,29 @@ function App(){
 
       <div className="main">
         {view.t==='home'&&<HomeTab candidates={candidates} records={records} confirmed={confirmed} me={me} profiles={profiles} go={go} onConfirm={confirmClass}
-          guestbook={guestbook} onAddGuest={addGuestEntry} onDelGuest={delGuestEntry}/>}
+          guestbook={guestbook} onAddGuest={addGuestEntry} onDelGuest={delGuestEntry}
+          tally={tally} onVote={()=>setShowVote(true)}/>}
         {view.t==='invite'&&<Empty title="초대 링크를 확인하고 있어요..."/>}
         {view.t==='records'&&<RecordsTab records={records} candidates={candidates} onSave={saveRecs} go={go} me={me}
           openAdd={pendingAdd==='records'} onAddClosed={()=>setPendingAdd(null)}/>}
         {view.t==='candidates'&&<CandidatesTab candidates={candidates} confirmed={confirmed} onSave={saveCands} go={go} me={me} profiles={profiles}
+          tally={tally} onVote={()=>setShowVote(true)}
           openAdd={pendingAdd==='candidates'} onAddClosed={()=>setPendingAdd(null)}/>}
         {view.t==='record'&&<div className="detail-wrap">{rec
           ?<RecordDetail rec={rec} me={me} profiles={profiles} openImp={view.imp} onUpdate={u=>saveRecs(records.map(r=>r.id===u.id?u:r))}/>
           :<Empty title="기록을 찾을 수 없어요."/>}</div>}
         {view.t==='cand'&&<div className="detail-wrap">{cand
           ?<CandidateDetail cand={cand} me={me} profiles={profiles} confirmed={confirmed} onConfirm={confirmClass}
+             tally={tally} myPicks={myPicks} onVote={()=>setShowVote(true)}
              onUpdate={u=>saveCands(candidates.map(c=>c.id===u.id?u:c))}
              onDelete={c=>{saveCands(candidates.filter(x=>x.id!==c.id));back();}}/>
           :<Empty title="후보를 찾을 수 없어요."/>}</div>}
       </div>
 
       {showProfile&&<ProfileModal me={me} profiles={profiles} onSave={saveProfile} onSetRole={setMemberRole} onClose={()=>setShowProfile(false)}/>}
+      {showVote&&isMember(me)&&<VoteModal ym={curYM} myPicks={myPicks} onClose={()=>setShowVote(false)}
+        candidates={candidates.filter(c=>!Object.values(confirmed||{}).includes(c.id))}
+        onSave={async p=>{await saveMyBallot(p);setShowVote(false);}}/>}
     </div>
   );
 }
