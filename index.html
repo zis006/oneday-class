@@ -993,15 +993,27 @@ function ImpressionForm({me,initial,onSubmit,onCancel}){
 
 
 /* ── 방명록 (정회원·객원멤버 모두 작성 가능) ─────────────────── */
-function Guestbook({entries,me,profiles,onAdd,onDelete}){
+function Guestbook({entries,me,profiles,onAdd,onDelete,onReply,onDelReply}){
   const [text,setText]=useState('');
   const [open,setOpen]=useState(false);
+  const [replyOn,setReplyOn]=useState(null);   // 한 번에 하나만 열어둔다
+  const [replyText,setReplyText]=useState('');
   const list=[...(entries||[])].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
   function submit(){
     const t=text.trim();
     if(!t)return;
-    onAdd({id:uid(),uid:me.uid,author:me.name,text:t,createdAt:Date.now()});
+    onAdd({id:uid(),uid:me.uid,author:me.name,text:t,replies:[],createdAt:Date.now()});
     setText('');setOpen(false);
+  }
+  function submitReply(gid){
+    const t=replyText.trim();
+    if(!t)return;
+    onReply(gid,{id:uid(),uid:me.uid,author:me.name,text:t,createdAt:Date.now()});
+    setReplyText('');setReplyOn(null);
+  }
+  function toggleReply(gid){
+    setReplyOn(cur=>cur===gid?null:gid);
+    setReplyText('');
   }
   return(
     <div style={CS}>
@@ -1027,6 +1039,36 @@ function Guestbook({entries,me,profiles,onAdd,onDelete}){
             </div>
           </div>
           <div style={{fontSize:14,color:'#3A3A44',lineHeight:1.65,whiteSpace:'pre-line'}}>{g.text}</div>
+
+          {/* 댓글 — 정회원·객원멤버 모두 가능 */}
+          {onReply&&<button onClick={()=>toggleReply(g.id)}
+            style={{marginTop:8,background:'none',border:'none',padding:0,cursor:'pointer',fontFamily:'inherit',fontSize:12,fontWeight:700,color:'#8A8A96'}}>
+            💬 댓글{(g.replies||[]).length?` ${(g.replies||[]).length}`:''}
+          </button>}
+
+          {((g.replies||[]).length>0||replyOn===g.id)&&
+            <div style={{marginTop:9,paddingLeft:11,borderLeft:'2px solid #EFEFF3',display:'flex',flexDirection:'column',gap:9}}>
+              {(g.replies||[]).map(r=>(
+                <div key={r.id}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}>
+                    <UserLine uid={r.uid} fallbackName={r.author} profiles={profiles} size={18}/>
+                    <div style={{display:'flex',alignItems:'center',gap:5,flexShrink:0}}>
+                      <span style={{fontSize:11,color:'#A6A6B2'}}>{r.createdAt?fmtDot(new Date(r.createdAt)).slice(5,10):''}</span>
+                      {onDelReply&&me&&r.uid===me.uid&&<button onClick={()=>onDelReply(g.id,r.id)}
+                        style={{background:'none',border:'none',cursor:'pointer',color:'#D6D6DE',fontSize:16,lineHeight:1,padding:0}}>×</button>}
+                    </div>
+                  </div>
+                  <div style={{fontSize:13,color:'#3A3A44',lineHeight:1.6,marginTop:4}}>{r.text}</div>
+                </div>
+              ))}
+              {replyOn===g.id&&<div style={{display:'flex',gap:6}}>
+                <input style={{...IS,flex:1}} value={replyText} autoFocus
+                  onChange={e=>setReplyText(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();submitReply(g.id);}}}
+                  placeholder="댓글을 남겨보세요"/>
+                <Btn v="gray" sx={{padding:'10px 14px'}} onClick={()=>submitReply(g.id)}>등록</Btn>
+              </div>}
+            </div>}
         </div>
       ))}
     </div>
@@ -1034,7 +1076,7 @@ function Guestbook({entries,me,profiles,onAdd,onDelete}){
 }
 
 /* ═══════════════════ 홈 ═══════════════════════════════════════ */
-function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestbook,onAddGuest,onDelGuest,tally,myPicks,onSaveBallot}){
+function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestbook,onAddGuest,onDelGuest,onGuestReply,onDelGuestReply,tally,myPicks,onSaveBallot}){
   const [picking,setPicking]=useState(false);
   const [picks,setPicks]=useState(myPicks||[]);
   const [saving,setSaving]=useState(false);
@@ -1177,7 +1219,8 @@ function HomeTab({candidates,records,confirmed,me,profiles,go,onConfirm,guestboo
       {/* 방명록 — 등급 관계없이 누구나 */}
       <div className="sec">
         <div className="sec-h"><span className="sec-t">방명록</span></div>
-        <Guestbook entries={guestbook} me={me} profiles={profiles} onAdd={onAddGuest} onDelete={onDelGuest}/>
+        <Guestbook entries={guestbook} me={me} profiles={profiles} onAdd={onAddGuest} onDelete={onDelGuest}
+          onReply={onGuestReply} onDelReply={onDelGuestReply}/>
       </div>
 
       {/* 지난 활동 소감 — 객원멤버에게는 노출하지 않는다 */}
@@ -2023,6 +2066,12 @@ function App(){
   }
   const addGuestEntry=g=>saveGuestbook([...guestbook,g]);
   const delGuestEntry=id=>{ if(confirm('삭제할까요?')) saveGuestbook(guestbook.filter(g=>g.id!==id)); };
+  // 방명록 댓글 (등급 관계없이 누구나)
+  const addGuestReply=(gid,r)=>saveGuestbook(guestbook.map(g=>g.id===gid?{...g,replies:[...(g.replies||[]),r]}:g));
+  const delGuestReply=(gid,rid)=>{
+    if(!confirm('댓글을 삭제할까요?'))return;
+    saveGuestbook(guestbook.map(g=>g.id===gid?{...g,replies:(g.replies||[]).filter(r=>r.id!==rid)}:g));
+  };
   // 이번(다가오는) 달 클래스 확정 · 같은 후보를 다시 고르면 해제
   async function confirmClass(ym,candId){
     const next={...confirmed};
@@ -2112,6 +2161,7 @@ function App(){
       <div className="main">
         {view.t==='home'&&<HomeTab candidates={candidates} records={records} confirmed={confirmed} me={me} profiles={profiles} go={go} onConfirm={confirmClass}
           guestbook={guestbook} onAddGuest={addGuestEntry} onDelGuest={delGuestEntry}
+          onGuestReply={addGuestReply} onDelGuestReply={delGuestReply}
           tally={tally} myPicks={myPicks} onSaveBallot={saveMyBallot}/>}
         {view.t==='invite'&&<Empty title="초대 링크를 확인하고 있어요..."/>}
         {view.t==='records'&&<RecordsTab records={records} candidates={candidates} onSave={saveRecs} go={go} me={me}
